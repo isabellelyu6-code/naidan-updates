@@ -8,7 +8,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QP
 from PySide6.QtWidgets import QApplication, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSystemTrayIcon, QVBoxLayout, QWidget
 
 SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
-APP_VERSION="2.1.0"
+APP_VERSION="2.1.1"
 # A GitHub Releases API endpoint will be inserted after the user's publishing
 # repository is connected. pet_data.json can override it with update_api_url.
 UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
@@ -296,8 +296,8 @@ class FuzzyPet(QWidget):
                 req=urllib.request.Request(url,headers={"Accept":"application/vnd.github+json","User-Agent":f"Naidan/{APP_VERSION}"})
                 with urllib.request.urlopen(req,timeout=12) as response: info=json.load(response)
                 tag=str(info.get("tag_name") or "")
-                asset=next((a for a in info.get("assets",[]) if str(a.get("name","")).lower() in ("奶蛋.exe","naidan.exe")),None)
-                if not tag or not asset: raise ValueError("release is missing 奶蛋.exe")
+                asset=next((a for a in info.get("assets",[]) if str(a.get("name","")).lower() in ("naidan-windows.zip","奶蛋-windows.zip")),None)
+                if not tag or not asset: raise ValueError("release is missing naidan-windows.zip")
                 self.update_signals.checked.emit({"ok":True,"manual":manual,"version":tag,"notes":str(info.get("body") or ""),"url":str(asset["browser_download_url"])})
             except Exception as exc:self.update_signals.checked.emit({"ok":False,"manual":manual,"error":str(exc)})
         threading.Thread(target=worker,daemon=True).start()
@@ -318,7 +318,7 @@ class FuzzyPet(QWidget):
         def worker():
             try:
                 req=urllib.request.Request(info["url"],headers={"User-Agent":f"Naidan/{APP_VERSION}"})
-                target=Path(tempfile.gettempdir())/f"奶蛋-{info['version']}.exe"
+                target=Path(tempfile.gettempdir())/f"naidan-{info['version']}.zip"
                 with urllib.request.urlopen(req,timeout=90) as source,target.open("wb") as dest:shutil.copyfileobj(source,dest)
                 if target.stat().st_size<1_000_000:raise ValueError("downloaded file is unexpectedly small")
                 self.update_signals.downloaded.emit({"ok":True,"path":str(target)})
@@ -329,11 +329,11 @@ class FuzzyPet(QWidget):
         if not result.get("ok"):
             self.say("更新下载失败，旧版没有受到影响。","cry",7);return
         if not getattr(sys,"frozen",False) or os.name!="nt":
-            self.say("新版已下载；自动替换只在奶蛋.exe中启用。","shock",8);return
-        current=Path(sys.executable);downloaded=Path(result["path"]);script=Path(tempfile.gettempdir())/"naidan_apply_update.cmd"
-        body="@echo off\r\nchcp 65001 >nul\r\ntimeout /t 2 /nobreak >nul\r\n"+f'copy /Y "{downloaded}" "{current}" >nul\r\nif errorlevel 1 exit /b 1\r\nstart "" "{current}"\r\ndel "%~f0"\r\n'
+            self.say("新版已下载；自动替换只在奶蛋文件夹版中启用。","shock",8);return
+        current=Path(sys.executable);downloaded=Path(result["path"]);script=Path(tempfile.gettempdir())/"naidan_apply_update.ps1";stage=Path(tempfile.gettempdir())/"naidan_update_unpack"
+        body=f'''$ErrorActionPreference = "Stop"\nStart-Sleep -Seconds 3\n$zip = "{downloaded}"\n$install = "{current.parent}"\n$stage = "{stage}"\nif (Test-Path $stage) {{ Remove-Item $stage -Recurse -Force }}\nExpand-Archive -LiteralPath $zip -DestinationPath $stage -Force\n$source = Join-Path $stage "奶蛋"\nif (-not (Test-Path (Join-Path $source "奶蛋.exe"))) {{ exit 1 }}\nCopy-Item (Join-Path $source "*") $install -Recurse -Force\nStart-Process (Join-Path $install "奶蛋.exe")\n'''
         script.write_text(body,encoding="utf-8-sig")
-        try:subprocess.Popen(["cmd","/c",str(script)],creationflags=0x08000000);QApplication.quit()
+        try:subprocess.Popen(["powershell","-NoProfile","-ExecutionPolicy","Bypass","-File",str(script)],creationflags=0x08000000);QApplication.quit()
         except OSError:self.say("无法自动替换；旧版仍可正常使用。","cry",7)
     def toggle_auto_update(self):
         self.data["auto_update"]=not self.data.get("auto_update",True);self.save_data();self.say("已开启自动检查更新。" if self.data["auto_update"] else "已关闭自动检查更新。","happy",5)
