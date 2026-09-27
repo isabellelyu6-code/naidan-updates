@@ -11,27 +11,31 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Prepare assets
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force assets | Out-Null
-          Copy-Item idle.png,step.png,heart.png,angel.png,roll.png,奶蛋.ico assets
-
+          foreach ($name in @("idle.png","step.png","heart.png","angel.png","roll.png","奶蛋.ico")) {
+            if (Test-Path $name) { Copy-Item $name assets }
+          }
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pyinstaller pillow
-
-      - name: Build EXE
+      - name: Build folder version
         shell: cmd
-        run: pyinstaller --noconfirm --clean --onefile --windowed --name "奶蛋" --icon "assets\奶蛋.ico" --add-data "assets;assets" pet.py
-
+        run: >-
+          pyinstaller --noconfirm --clean --onedir --windowed
+          --name "奶蛋"
+          --icon "assets\奶蛋.ico"
+          --add-data "assets;assets"
+          pet.py
+      - name: Create ZIP
+        shell: pwsh
+        run: Compress-Archive -Path "dist/奶蛋" -DestinationPath "naidan-windows.zip" -Force
       - name: Publish release
         shell: pwsh
         env:
@@ -39,4 +43,9 @@ jobs:
         run: |
           $version = (Select-String -Path pet.py -Pattern '^APP_VERSION="(.+)"$').Matches.Groups[1].Value
           $tag = "v$version"
-          gh release create $tag "dist/奶蛋.exe" --title "奶蛋 $tag" --notes "奶蛋桌面助手 $tag"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag "naidan-windows.zip" --clobber
+          } else {
+            gh release create $tag "naidan-windows.zip" --title "奶蛋 $tag" --notes "改用文件夹版 ZIP，降低 Windows Defender 对单文件打包的误报概率，并支持 ZIP 自动更新。"
+          }
