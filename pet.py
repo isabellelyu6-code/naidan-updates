@@ -1,0 +1,437 @@
+"""Milk Egg (奶蛋) Desktop Assistant v2 for Windows."""
+from __future__ import annotations
+import json, math, os, random, shutil, subprocess, sys, tempfile, threading, time, urllib.parse, urllib.request, webbrowser
+from datetime import datetime
+from pathlib import Path
+from PySide6.QtCore import QObject, QPoint, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QTransform
+from PySide6.QtWidgets import QApplication, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSystemTrayIcon, QVBoxLayout, QWidget
+
+SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
+APP_VERSION="2.1.0"
+# A GitHub Releases API endpoint will be inserted after the user's publishing
+# repository is connected. pet_data.json can override it with update_api_url.
+UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
+if getattr(sys,"frozen",False):
+    DATA_DIR=Path(os.environ.get("APPDATA",Path.home()))/"奶蛋"; DATA_DIR.mkdir(parents=True,exist_ok=True); DATA=DATA_DIR/"pet_data.json"
+else: DATA=SCRIPT_ROOT/"pet_data.json"
+DEFAULT={"city":"London","quiet":False,"speak":False,"notes":[],"pet_scale":100,"width_scale":100,"height_scale":100,"saved_timers":[],"stopwatch_started":None,"auto_update":True,"update_api_url":"","links":{"ChatGPT":"https://chatgpt.com/","小红书":"https://www.xiaohongshu.com/","Portico":"https://evision.ucl.ac.uk/urd/sits.urd/run/siw_lgn","Gmail":"https://mail.google.com/mail/u/0/?tab=rm&ogbl#inbox","timetable":"https://timetable.ucl.ac.uk/my-timetable"}}
+LEGACY_LINKS={"Imperial Blackboard","My Imperial","Imperial Outlook","YouTube","Spotify","Portical"}
+
+def load_data():
+    data=json.loads(json.dumps(DEFAULT))
+    try:
+        saved=json.loads(DATA.read_text(encoding="utf-8")); data.update({k:v for k,v in saved.items() if k!="links"})
+        data["links"].update({k:v for k,v in saved.get("links",{}).items() if k not in LEGACY_LINKS})
+    except (OSError,ValueError,TypeError): pass
+    return data
+
+class NotesWindow(QWidget):
+    def __init__(self,pet):
+        super().__init__(); self.pet=pet; self.setWindowTitle("奶蛋的小本本"); self.resize(420,330); layout=QVBoxLayout(self)
+        self.editor=QPlainTextEdit("\n\n".join(pet.data["notes"])); self.editor.setPlaceholderText("在这里写点什么……不同笔记请空一行。")
+        save=QPushButton("保存"); save.clicked.connect(self.save); layout.addWidget(self.editor); layout.addWidget(save)
+    def save(self):
+        self.pet.data["notes"]=[x.strip() for x in self.editor.toPlainText().split("\n\n") if x.strip()]; self.pet.save_data(); self.pet.say("记好啦！"); self.close()
+
+class SizeWindow(QWidget):
+    def __init__(self,pet):
+        super().__init__(); self.pet=pet; self.setWindowTitle("奶蛋外观尺寸"); self.setFixedWidth(360); layout=QVBoxLayout(self)
+        layout.addWidget(QLabel("拖动时会实时预览；横向和纵向可以独立压缩。"))
+        self.sliders={}
+        for text,key,low,high in (("整体大小","pet_scale",50,160),("横向宽度","width_scale",50,150),("纵向高度","height_scale",50,150)):
+            row=QHBoxLayout(); label=QLabel(text); value=QLabel(); value.setFixedWidth(45)
+            slider=QSlider(Qt.Horizontal); slider.setRange(low,high); slider.setValue(int(pet.data.get(key,100))); slider.setTickInterval(10)
+            slider.valueChanged.connect(lambda v,k=key,l=value:self.changed(k,v,l)); value.setText(f"{slider.value()}%")
+            row.addWidget(label); row.addWidget(slider,1); row.addWidget(value); layout.addLayout(row); self.sliders[key]=slider
+        reset=QPushButton("恢复默认比例"); reset.clicked.connect(self.reset); layout.addWidget(reset)
+    def changed(self,key,value,label):
+        label.setText(f"{value}%"); self.pet.data[key]=value; self.pet.update_window_size(); self.pet.update(); self.pet.save_data()
+    def reset(self):
+        for slider in self.sliders.values(): slider.setValue(100)
+
+class TimerWindow(QWidget):
+    def __init__(self,pet):
+        super().__init__(); self.pet=pet; self.setWindowTitle("奶蛋计时器"); self.setFixedWidth(360); layout=QVBoxLayout(self)
+        self.status=QLabel("没有正在进行的计时"); self.status.setAlignment(Qt.AlignCenter); self.status.setStyleSheet("font-size: 25px; font-weight: 600; padding: 14px; background: #fff7dc; border: 2px solid #efb83f; border-radius: 14px;"); layout.addWidget(self.status)
+        grid=QGridLayout()
+        for i,(text,mins) in enumerate((("25 分钟专注",25),("50 分钟专注",50),("5 分钟休息",5))):
+            button=QPushButton(text); button.clicked.connect(lambda checked=False,m=mins,t=text:self.start_countdown(m,t)); grid.addWidget(button,i//2,i%2)
+        custom=QPushButton("自定义倒计时"); custom.clicked.connect(self.custom); grid.addWidget(custom,1,1)
+        stopwatch=QPushButton("开始/结束正计时"); stopwatch.clicked.connect(self.toggle_stopwatch); grid.addWidget(stopwatch,2,0)
+        stop=QPushButton("停止全部计时"); stop.clicked.connect(self.stop_all); grid.addWidget(stop,2,1); layout.addLayout(grid)
+        hint=QLabel("关闭窗口不会停止计时；时间会持续显示在奶蛋头顶。可再次从右键菜单打开。")
+        hint.setWordWrap(True); hint.setStyleSheet("color:#666; font-size:11px;"); layout.addWidget(hint)
+        self.refresh_timer=QTimer(self); self.refresh_timer.setInterval(250); self.refresh_timer.timeout.connect(self.refresh); self.refresh_timer.start(); self.refresh()
+    def start_countdown(self,minutes,label): self.pet.add_timer(minutes,label+"结束啦！"); self.refresh()
+    def custom(self): self.pet.custom_timer(False); self.refresh()
+    def toggle_stopwatch(self): self.pet.toggle_stopwatch(); self.refresh()
+    def stop_all(self):
+        self.pet.timers.clear(); self.pet.stopwatch_started=None; self.pet.save_timer_state(); self.pet.say("所有计时都停止啦。","happy"); self.refresh()
+    def refresh(self):
+        text=self.pet.active_timer_text(multiline=True); self.status.setText(text or "没有正在进行的计时")
+
+class UpdateSignals(QObject):
+    checked=Signal(object)
+    downloaded=Signal(object)
+
+def version_key(text):
+    cleaned=str(text).strip().lower().lstrip("v"); parts=[]
+    for item in cleaned.split("."):
+        digits="".join(ch for ch in item if ch.isdigit()); parts.append(int(digits or 0))
+    return tuple((parts+[0,0,0])[:3])
+
+class FuzzyPet(QWidget):
+    def __init__(self):
+        super().__init__(); self.data=load_data(); self.setWindowTitle("奶蛋桌面助手 v2")
+        self.setWindowFlags(Qt.Window|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint); self.setAttribute(Qt.WA_TranslucentBackground); self.setWindowIcon(QIcon(str(ASSETS/"奶蛋.ico"))); self.setFixedSize(330,350)
+        self.frames={}
+        for name in ("idle","step","heart","angel","roll"):
+            p=QPixmap(str(ASSETS/f"{name}.png"))
+            if p.isNull(): raise FileNotFoundError(ASSETS/f"{name}.png")
+            self.frames[name]=p
+        self.walking=False; self.paused=False; self.data["quiet"]=False; self.move_dx=random.choice((-2,0,2)); self.move_dy=random.choice((-2,0,2)); self.dragging=False; self.drag_offset=QPoint(); self.press_global=QPoint(); self.press_time=0.0
+        self.tiny_mode=False; self.normal_pos=QPoint()
+        self.last_interaction=time.monotonic(); self.next_decision=time.monotonic()+2; self.expression="normal"; self.expression_until=0.; self.hop_started=0.; self.roll_speed=0.; self.roll_angle=0.; self.roll_spin_speed=0.; self.rolling_until=0.; self.bubble=""; self.bubble_until=0.
+        wall=time.time(); self.timers=[]
+        for item in self.data.get("saved_timers",[]):
+            try:
+                deadline=float(item["deadline"]); label=str(item["label"])
+                if deadline>wall:self.timers.append((deadline,label))
+            except (KeyError,TypeError,ValueError):pass
+        try:self.stopwatch_started=float(self.data["stopwatch_started"]) if self.data.get("stopwatch_started") else None
+        except (TypeError,ValueError):self.stopwatch_started=None
+        self.notes_window=None; self.update_signals=UpdateSignals(); self.update_signals.checked.connect(self.update_check_finished); self.update_signals.downloaded.connect(self.update_download_finished); self.update_info=None; self.update_busy=False
+        self.record_watch_started=0.; self.record_candidate=None; self.record_size=-1; self.record_stable=0; self.size_window=None; self.timer_window=None
+        self.update_window_size(); b=QApplication.primaryScreen().availableGeometry(); self.move(b.right()-self.width()-25,b.bottom()-self.height()+5)
+        self.timer=QTimer(self); self.timer.setInterval(40); self.timer.timeout.connect(self.tick); self.timer.start()
+        if self.data.get("auto_update",True): QTimer.singleShot(3500,lambda:self.check_for_updates(False))
+    def save_data(self):
+        try: DATA.write_text(json.dumps(self.data,ensure_ascii=False,indent=2),encoding="utf-8")
+        except OSError: pass
+    def save_timer_state(self):
+        self.data["saved_timers"]=[{"deadline":deadline,"label":label} for deadline,label in self.timers]
+        self.data["stopwatch_started"]=self.stopwatch_started; self.save_data()
+    def bounds(self):
+        s=QApplication.screenAt(self.frameGeometry().center()); return (s or QApplication.primaryScreen()).availableGeometry()
+    def render_size(self,key="idle"):
+        overall=float(self.data.get("pet_scale",100))/100; wide=float(self.data.get("width_scale",100))/100; tall=float(self.data.get("height_scale",100))/100
+        source=self.frames[key]; natural_w=235*source.width()/source.height()
+        return max(24,round(natural_w*overall*wide)),max(24,round(235*overall*tall))
+    def update_window_size(self):
+        if self.tiny_mode:return
+        old_bottom=self.y()+self.height(); old_center=self.x()+self.width()//2; w,h=self.render_size()
+        self.setFixedSize(max(330,w+50),max(350,h+105)); self.move(old_center-self.width()//2,old_bottom-self.height())
+    def tick(self):
+        now=time.monotonic(); wall=time.time(); timers_changed=False
+        for deadline,message in self.timers[:]:
+            if wall>=deadline:
+                self.timers.remove((deadline,message)); timers_changed=True; QApplication.beep(); QTimer.singleShot(350,QApplication.beep); QTimer.singleShot(700,QApplication.beep); self.say(message,"happy",8); QMessageBox.information(None,"奶蛋提醒你",message)
+        if timers_changed:self.save_timer_state()
+        if now>=self.expression_until and self.expression!="sleep": self.expression="normal"
+        if now>=self.bubble_until: self.bubble=""
+        if not self.dragging and now<self.rolling_until:
+            b=self.bounds(); x=self.x()+round(self.roll_speed)
+            if x<=b.left() or x>=b.right()-self.width()+1: self.roll_speed*=-.92; x=max(b.left(),min(x,b.right()-self.width()+1))
+            self.move(x,self.y()); self.roll_angle+=self.roll_spin_speed; self.roll_speed*=.995
+        elif not self.paused and not self.dragging:
+            if now-self.last_interaction>180: self.walking=False; self.expression="sleep"
+            elif now>=self.next_decision:
+                self.expression="normal"
+                if random.random()<.08: self.start_roll(random.choice((-7.,7.)),2.2)
+                else:
+                    self.walking=random.random()<.58
+                    if self.walking:
+                        self.move_dx,self.move_dy=random.choice(((-2,0),(2,0),(0,-2),(0,2),(-2,-2),(2,-2),(-2,2),(2,2)))
+                    self.next_decision=now+random.uniform(2.5,6)
+            if self.walking and now>=self.rolling_until:
+                b=self.bounds(); x=self.x()+self.move_dx; y=self.y()+self.move_dy
+                if x<=b.left() or x>=b.right()-self.width()+1: self.move_dx*=-1; x=max(b.left(),min(x,b.right()-self.width()+1))
+                if y<=b.top() or y>=b.bottom()-self.height()+1: self.move_dy*=-1; y=max(b.top(),min(y,b.bottom()-self.height()+1))
+                self.move(x,y)
+        self.update()
+    def paintEvent(self,event):
+        now=time.monotonic(); p=QPainter(self); p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.SmoothPixmapTransform)
+        if self.tiny_mode:
+            frame=self.frames["roll"].scaled(64,64,Qt.KeepAspectRatio,Qt.SmoothTransformation)
+            p.drawPixmap((self.width()-frame.width())//2,(self.height()-frame.height())//2,frame); return
+        rolling=now<self.rolling_until
+        key="roll" if rolling else (self.expression if self.expression in ("heart","angel") else ("step" if self.walking and not self.dragging and int(now*5)%2 else "idle"))
+        target_w,target_h=self.render_size(key); frame=self.frames[key].scaled(target_w,target_h,Qt.IgnoreAspectRatio,Qt.SmoothTransformation)
+        if not rolling: frame=frame.scaledToHeight(round(frame.height()*(1 if self.dragging else 1+.009*math.sin(now*2.8))),Qt.SmoothTransformation)
+        x=(self.width()-frame.width())//2; y=self.height()-frame.height()-4; hop=now-self.hop_started
+        if 0<=hop<.55: y-=round(28*math.sin(math.pi*hop/.55))
+        if rolling:
+            # Rotate around one fixed centre. The sprite and its bounding box no
+            # longer change size from frame to frame, so rolling stays smooth.
+            cx=self.width()/2; cy=y+frame.height()/2
+            p.save(); p.translate(cx,cy); p.rotate(self.roll_angle)
+            p.drawPixmap(round(-frame.width()/2),round(-frame.height()/2),frame); p.restore()
+        else: p.drawPixmap(x,y,frame)
+        if self.expression not in ("normal","heart","angel") and now>=self.rolling_until:
+            p.setFont(QFont("Segoe UI Emoji",28)); p.drawText(QRectF(115,205,110,60),Qt.AlignCenter,{"happy":"✨","angry":"💢","cry":"💧","shock":"❗","shy":"💕","cool":"😎","eat":"🍪","sleep":"💤"}.get(self.expression,""))
+        display_text=self.bubble or self.active_timer_text(multiline=False)
+        if display_text:
+            font=QFont("Microsoft YaHei UI",9); metrics=QFontMetrics(font)
+            measured=metrics.boundingRect(QRect(0,0,260,200),Qt.AlignCenter|Qt.TextWordWrap,display_text)
+            bubble_w=min(280,max(24,measured.width()+18)); bubble_h=max(24,measured.height()+10)
+            bubble_y=max(4,y-bubble_h-5); r=QRectF((self.width()-bubble_w)/2,bubble_y,bubble_w,bubble_h)
+            p.setBrush(QColor(255,255,255,238)); p.setPen(QPen(QColor(240,180,55),2)); p.drawRoundedRect(r,10,10); p.setPen(QColor(55,45,35)); p.setFont(font); p.drawText(r.adjusted(8,5,-8,-5),Qt.AlignCenter|Qt.TextWordWrap,display_text)
+    def say(self,text,expression="happy",seconds=4):
+        self.bubble=text; self.bubble_until=time.monotonic()+seconds; self.expression=expression; self.expression_until=time.monotonic()+seconds; self.walking=False; self.last_interaction=time.monotonic()
+        if self.data.get("speak"):
+            safe=text.replace("'","''")
+            try: subprocess.Popen(["powershell","-NoProfile","-Command",f"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{safe}')"],creationflags=0x08000000)
+            except OSError: pass
+        self.update()
+    def start_roll(self,speed=9,seconds=2.6):
+        self.walking=False; self.roll_speed=speed; self.roll_spin_speed=(14.0 if abs(speed)<1 else speed*2.4); self.rolling_until=time.monotonic()+seconds; self.last_interaction=time.monotonic()
+    def set_expression(self,name):
+        text={"happy":"耶！","angry":"哼！再点我就生气啦","cry":"呜呜……","shock":"欸？！","shy":"嘿嘿……","cool":"今天也很酷。","eat":"嚼嚼嚼……","sleep":"晚安啦 Zzz","heart":"送你一颗心！","angel":"今天是天使蛋。"}.get(name,"你好呀"); self.say(text,name,3); self.hop_started=time.monotonic()
+    def weather(self): self.say("正在看看窗外……","shock",10); QTimer.singleShot(20,self.fetch_weather)
+    def fetch_weather(self):
+        try:
+            city=urllib.parse.quote(self.data["city"]); geo=json.load(urllib.request.urlopen(f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=zh&format=json",timeout=8)); place=geo["results"][0]
+            url=("https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}&current=temperature_2m,apparent_temperature,weather_code&daily=precipitation_probability_max&timezone=auto").format(**place); w=json.load(urllib.request.urlopen(url,timeout=8)); c=w["current"]
+            codes={0:"晴",1:"大致晴朗",2:"多云",3:"阴",45:"有雾",51:"毛毛雨",53:"毛毛雨",55:"较强毛毛雨",61:"小雨",63:"中雨",65:"大雨",71:"小雪",73:"中雪",75:"大雪",80:"阵雨",81:"阵雨",82:"强阵雨",95:"雷雨"}; rain=w["daily"]["precipitation_probability_max"][0]
+            self.say(f"{self.data['city']}：{codes.get(c['weather_code'],'天气变化')}，{c['temperature_2m']:.0f}°C，体感 {c['apparent_temperature']:.0f}°C。今天最高降雨概率 {rain}% 。","happy",9)
+        except Exception: self.say("天气暂时没查到，请检查网络再试试。","cry",6)
+    def overview(self):
+        n=datetime.now(); self.say(n.strftime("今天是 %Y年%m月%d日，星期")+"一二三四五六日"[n.weekday()]+n.strftime("。现在 %H:%M。"),"happy",7)
+    def add_timer(self,mins,label="倒计时结束啦！"): self.timers.append((time.time()+mins*60,label)); self.save_timer_state(); self.say(f"好的，{mins} 分钟后提醒你。")
+    def active_timer_text(self,multiline=False):
+        now=time.time(); parts=[]
+        if self.timers:
+            deadline,label=min(self.timers,key=lambda x:x[0]); left=max(0,deadline-now); short=label.replace("结束啦！","").replace("结束啦","")
+            parts.append(f"⏳ {short}  {int(left//60):02d}:{int(left%60):02d}")
+        if self.stopwatch_started is not None:
+            spent=max(0,now-self.stopwatch_started); parts.append(f"⏱ 正计时  {int(spent//60):02d}:{int(spent%60):02d}")
+        return ("\n" if multiline else "  ·  ").join(parts)
+    def timer_status(self):
+        now=time.time(); parts=[]
+        if self.timers:
+            left=max(0,min(x[0] for x in self.timers)-now); parts.append(f"最近的倒计时还剩 {int(left//60):02d}:{int(left%60):02d}")
+        if self.stopwatch_started is not None:
+            spent=now-self.stopwatch_started; parts.append(f"正计时已经 {int(spent//60):02d}:{int(spent%60):02d}")
+        self.say("；".join(parts) if parts else "现在没有正在进行的计时。","happy",6)
+    def toggle_stopwatch(self):
+        if self.stopwatch_started is None:self.stopwatch_started=time.time();self.say("正计时开始！","happy")
+        else:
+            spent=time.time()-self.stopwatch_started;self.stopwatch_started=None;self.say(f"计时结束：{int(spent//60):02d}:{int(spent%60):02d}","happy",7)
+        self.save_timer_state()
+    def custom_timer(self,reminder=False):
+        mins,ok=QInputDialog.getInt(self,"设置提醒" if reminder else "设置倒计时","多少分钟后？",30,1,10080)
+        if not ok:return
+        msg="倒计时结束啦！"
+        if reminder:
+            msg,ok=QInputDialog.getText(self,"提醒内容","要提醒什么？")
+            if not ok or not msg.strip():return
+        self.add_timer(mins,msg.strip())
+    def decide(self):
+        text,ok=QInputDialog.getText(self,"让奶蛋决定","输入选项，用逗号分隔；留空则抛硬币：")
+        if ok:
+            choices=[x.strip() for x in text.replace("，",",").split(",") if x.strip()] or ["正面","反面"]; self.say("我选："+random.choice(choices),"shock",6)
+    def quick_note(self):
+        text,ok=QInputDialog.getMultiLineText(self,"快速记一下","奶蛋帮你记着：")
+        if ok and text.strip(): self.data["notes"].append(text.strip()); self.save_data(); self.say("记下来啦！")
+    def show_notes(self): self.notes_window=NotesWindow(self); self.notes_window.show()
+    def add_link(self):
+        name,ok=QInputDialog.getText(self,"添加快捷入口","显示名称：")
+        if not ok or not name.strip():return
+        url,ok=QInputDialog.getText(self,"添加快捷入口","网址（https://…）：")
+        if ok and url.strip():
+            if not url.startswith(("http://","https://")):url="https://"+url
+            self.data["links"][name.strip()]=url.strip(); self.save_data(); self.say("快捷入口加好啦！")
+    def launch_app(self,protocol,fallback):
+        try: os.startfile(protocol)
+        except OSError: webbrowser.open(fallback); self.say("没有找到桌面应用，已打开网页版。","shock",5)
+    def screenshots_folder(self):
+        candidates=[]
+        if os.environ.get("OneDrive"): candidates.append(Path(os.environ["OneDrive"])/"Desktop")
+        if os.environ.get("USERPROFILE"): candidates.append(Path(os.environ["USERPROFILE"])/"Desktop")
+        candidates.append(Path.home()/"Desktop")
+        desktop=next((p for p in candidates if p.exists()),candidates[-1])
+        folder=desktop/"相册"/"screenshots"; folder.mkdir(parents=True,exist_ok=True); return folder
+    def screenshot(self):
+        folder=self.screenshots_folder()
+        path=folder/(datetime.now().strftime("Screenshot_%Y%m%d_%H%M%S")+".png")
+        screen=QApplication.primaryScreen(); ok=screen.grabWindow(0).save(str(path),"PNG")
+        self.say(("截图已保存到桌面/相册/screenshots。" if ok else "截图失败了。"),"happy" if ok else "cry",6)
+    def screen_record(self):
+        self.record_watch_started=time.time(); self.record_candidate=None; self.record_size=-1; self.record_stable=0
+        try: os.startfile("ms-screenrecorder:"); self.say("已打开录屏工具。完成后会尝试移到 Screenshots 文件夹。","happy",7); QTimer.singleShot(2500,self.watch_recording)
+        except OSError:
+            try: os.startfile("ms-gamebar:"); self.say("已打开 Xbox Game Bar，请点击录制。","happy",7)
+            except OSError: self.say("系统没有找到自带录屏工具。可按 Win+Alt+R 试试。","cry",7)
+    def watch_recording(self):
+        roots=[Path.home()/"Videos"/"Screen Recordings"]
+        if os.environ.get("OneDrive"): roots.append(Path(os.environ["OneDrive"])/"Videos"/"Screen Recordings")
+        found=[]
+        for root in roots:
+            if root.exists(): found.extend(p for p in root.glob("*.mp4") if p.stat().st_mtime>=self.record_watch_started-2)
+        if found:
+            candidate=max(found,key=lambda p:p.stat().st_mtime); size=candidate.stat().st_size
+            if candidate==self.record_candidate and size==self.record_size:self.record_stable+=1
+            else:self.record_candidate=candidate;self.record_size=size;self.record_stable=0
+            if self.record_stable>=2:
+                dest=self.screenshots_folder()/candidate.name
+                try: shutil.move(str(candidate),str(dest)); self.say("录屏已移到桌面/相册/screenshots。","happy",7)
+                except OSError: self.say("录屏完成，但系统没有允许我移动文件。","shock",7)
+                return
+        if time.time()-self.record_watch_started<7200:QTimer.singleShot(2500,self.watch_recording)
+    def update_api_url(self):
+        return str(self.data.get("update_api_url") or UPDATE_API_URL).strip()
+    def check_for_updates(self,manual=True):
+        if self.update_busy:
+            if manual:self.say("已经在检查更新啦。","shock",4)
+            return
+        url=self.update_api_url()
+        if not url:
+            if manual:self.say("更新发布地址还没有连接完成。","shock",6)
+            return
+        self.update_busy=True
+        if manual:self.say("正在检查奶蛋的新版本……","shock",8)
+        def worker():
+            try:
+                req=urllib.request.Request(url,headers={"Accept":"application/vnd.github+json","User-Agent":f"Naidan/{APP_VERSION}"})
+                with urllib.request.urlopen(req,timeout=12) as response: info=json.load(response)
+                tag=str(info.get("tag_name") or "")
+                asset=next((a for a in info.get("assets",[]) if str(a.get("name","")).lower() in ("奶蛋.exe","naidan.exe")),None)
+                if not tag or not asset: raise ValueError("release is missing 奶蛋.exe")
+                self.update_signals.checked.emit({"ok":True,"manual":manual,"version":tag,"notes":str(info.get("body") or ""),"url":str(asset["browser_download_url"])})
+            except Exception as exc:self.update_signals.checked.emit({"ok":False,"manual":manual,"error":str(exc)})
+        threading.Thread(target=worker,daemon=True).start()
+    def update_check_finished(self,result):
+        self.update_busy=False
+        if not result.get("ok"):
+            if result.get("manual"):self.say("暂时无法检查更新，请稍后再试。","cry",6)
+            return
+        if version_key(result["version"])<=version_key(APP_VERSION):
+            if result.get("manual"):self.say(f"已经是最新版 v{APP_VERSION}。","happy",5)
+            return
+        self.update_info=result; notes=result.get("notes","").strip()[:900] or "修复问题并优化奶蛋。"
+        answer=QMessageBox.question(self,"奶蛋发现新版本",f"发现 {result['version']}（当前 v{APP_VERSION}）。\n\n{notes}\n\n现在下载并安装吗？",QMessageBox.Yes|QMessageBox.No,QMessageBox.Yes)
+        if answer==QMessageBox.Yes:self.download_update()
+    def download_update(self):
+        if not self.update_info or self.update_busy:return
+        self.update_busy=True; info=dict(self.update_info); self.say("正在下载更新，请稍等……","happy",20)
+        def worker():
+            try:
+                req=urllib.request.Request(info["url"],headers={"User-Agent":f"Naidan/{APP_VERSION}"})
+                target=Path(tempfile.gettempdir())/f"奶蛋-{info['version']}.exe"
+                with urllib.request.urlopen(req,timeout=90) as source,target.open("wb") as dest:shutil.copyfileobj(source,dest)
+                if target.stat().st_size<1_000_000:raise ValueError("downloaded file is unexpectedly small")
+                self.update_signals.downloaded.emit({"ok":True,"path":str(target)})
+            except Exception as exc:self.update_signals.downloaded.emit({"ok":False,"error":str(exc)})
+        threading.Thread(target=worker,daemon=True).start()
+    def update_download_finished(self,result):
+        self.update_busy=False
+        if not result.get("ok"):
+            self.say("更新下载失败，旧版没有受到影响。","cry",7);return
+        if not getattr(sys,"frozen",False) or os.name!="nt":
+            self.say("新版已下载；自动替换只在奶蛋.exe中启用。","shock",8);return
+        current=Path(sys.executable);downloaded=Path(result["path"]);script=Path(tempfile.gettempdir())/"naidan_apply_update.cmd"
+        body="@echo off\r\nchcp 65001 >nul\r\ntimeout /t 2 /nobreak >nul\r\n"+f'copy /Y "{downloaded}" "{current}" >nul\r\nif errorlevel 1 exit /b 1\r\nstart "" "{current}"\r\ndel "%~f0"\r\n'
+        script.write_text(body,encoding="utf-8-sig")
+        try:subprocess.Popen(["cmd","/c",str(script)],creationflags=0x08000000);QApplication.quit()
+        except OSError:self.say("无法自动替换；旧版仍可正常使用。","cry",7)
+    def toggle_auto_update(self):
+        self.data["auto_update"]=not self.data.get("auto_update",True);self.save_data();self.say("已开启自动检查更新。" if self.data["auto_update"] else "已关闭自动检查更新。","happy",5)
+    def toggle_tiny(self):
+        if not self.tiny_mode:
+            self.normal_pos=self.pos(); self.tiny_mode=True; self.paused=True; self.walking=False; self.setFixedSize(78,78)
+            b=self.bounds(); self.move(b.right()-self.width()+1,b.top()+(b.height()-self.height())//2)
+        else:
+            self.tiny_mode=False; self.setFixedSize(330,350); self.move(self.normal_pos); self.paused=False; self.update_window_size()
+        self.update()
+    def show_size_settings(self):
+        if self.tiny_mode:self.toggle_tiny()
+        self.size_window=SizeWindow(self); self.size_window.show(); self.size_window.raise_()
+    def show_timer_window(self):
+        self.timer_window=TimerWindow(self); self.timer_window.show(); self.timer_window.raise_()
+    def restore_pet(self):
+        if self.tiny_mode:self.toggle_tiny()
+        self.show(); self.raise_(); self.activateWindow()
+    def autostart_enabled(self):
+        if os.name!="nt":return False
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,r"Software\Microsoft\Windows\CurrentVersion\Run") as key:
+                winreg.QueryValueEx(key,"奶蛋"); return True
+        except OSError:return False
+    def toggle_autostart(self):
+        if os.name!="nt":self.say("开机启动设置仅支持 Windows。","shock",5);return
+        try:
+            import winreg
+            key=winreg.CreateKey(winreg.HKEY_CURRENT_USER,r"Software\Microsoft\Windows\CurrentVersion\Run")
+            if self.autostart_enabled():
+                try:winreg.DeleteValue(key,"奶蛋")
+                except OSError:pass
+                enabled=False
+            else:
+                if getattr(sys,"frozen",False):command=f'"{sys.executable}"'
+                else:
+                    pythonw=Path(sys.executable).with_name("pythonw.exe"); executable=pythonw if pythonw.exists() else Path(sys.executable)
+                    command=f'"{executable}" "{SCRIPT_ROOT/"pet.py"}"'
+                winreg.SetValueEx(key,"奶蛋",0,winreg.REG_SZ,command); enabled=True
+            winreg.CloseKey(key)
+            if getattr(self,"tray_autostart",None):self.tray_autostart.setChecked(enabled)
+            self.say("已开启开机自动启动。" if enabled else "已关闭开机自动启动。","happy",5)
+        except OSError:self.say("无法修改开机启动设置。","cry",5)
+    def setup_tray(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():return
+        self.tray=QSystemTrayIcon(QIcon(str(ASSETS/"idle.png")),self); self.tray.setToolTip("奶蛋桌宠")
+        tray_menu=QMenu(); restore=tray_menu.addAction("显示奶蛋"); restore.triggered.connect(self.restore_pet)
+        timer=tray_menu.addAction("打开计时面板"); timer.triggered.connect(self.show_timer_window)
+        tiny=tray_menu.addAction("隐藏成迷你蛋"); tiny.triggered.connect(self.toggle_tiny)
+        tray_menu.addSeparator(); self.tray_autostart=tray_menu.addAction("随 Windows 自动启动"); self.tray_autostart.setCheckable(True); self.tray_autostart.setChecked(self.autostart_enabled()); self.tray_autostart.triggered.connect(lambda checked:self.toggle_autostart())
+        tray_menu.addSeparator(); quit_action=tray_menu.addAction("退出奶蛋"); quit_action.triggered.connect(QApplication.quit)
+        self.tray.setContextMenu(tray_menu); self.tray.activated.connect(lambda reason:self.restore_pet() if reason==QSystemTrayIcon.ActivationReason.Trigger else None); self.tray.show()
+    def mouseDoubleClickEvent(self,e):
+        if self.tiny_mode and e.button()==Qt.LeftButton:self.toggle_tiny();e.accept()
+    def mousePressEvent(self,e):
+        self.last_interaction=time.monotonic()
+        if e.button()==Qt.LeftButton:self.press_global=e.globalPosition().toPoint();self.drag_offset=self.press_global-self.pos();self.press_time=time.monotonic();self.dragging=False;e.accept()
+    def mouseMoveEvent(self,e):
+        if e.buttons()&Qt.LeftButton:
+            cur=e.globalPosition().toPoint()
+            if (cur-self.press_global).manhattanLength()>6:self.dragging=True;self.walking=False;self.move(cur-self.drag_offset)
+            e.accept()
+    def mouseReleaseEvent(self,e):
+        if e.button()!=Qt.LeftButton:return
+        if self.dragging:
+            delta=e.globalPosition().toPoint().x()-self.press_global.x();self.dragging=False
+            if abs(delta)>90:self.start_roll(max(-13,min(13,delta/16)),2.4)
+        elif time.monotonic()-self.press_time<1:self.set_expression(random.choice(("heart","angel","happy","shy","shock")))
+        e.accept()
+    def contextMenuEvent(self,e):
+        menu=QMenu(self); callbacks={}
+        act=menu.addMenu("🎭 动作")
+        for label,fn in (("滚一圈",lambda:self.start_roll(8,2.6)),("高速滚走",lambda:self.start_roll(random.choice((-15,15)),3.4)),("原地翻滚",lambda:self.start_roll(.01,1.3)),("跳一下",lambda:setattr(self,"hop_started",time.monotonic()))):callbacks[act.addAction(label)]=fn
+        expr=menu.addMenu("😊 表情")
+        for label,name in (("开心","happy"),("生气","angry"),("哭泣","cry"),("震惊","shock"),("害羞","shy"),("酷酷墨镜","cool"),("吃饼干","eat"),("睡觉","sleep"),("爱心","heart"),("天使","angel")): callbacks[expr.addAction(label)]=lambda n=name:self.set_expression(n)
+        info=menu.addMenu("🌦 信息播报"); callbacks[info.addAction(f"{self.data['city']} 天气")]=self.weather; callbacks[info.addAction("当前时间")]=lambda:self.say(datetime.now().strftime("现在是 %H:%M。")); callbacks[info.addAction("今天日期")]=self.overview; callbacks[info.addAction("今日概览")]=lambda:(self.overview(),QTimer.singleShot(2500,self.weather)); info.addSeparator(); callbacks[info.addAction("修改天气城市…")]=self.change_city
+        tools=menu.addMenu("⏱ 小工具"); callbacks[tools.addAction("打开计时面板")]=self.show_timer_window
+        callbacks[tools.addAction("快速提醒…")]=lambda:self.custom_timer(True);callbacks[tools.addAction("快速记事…")]=self.quick_note;callbacks[tools.addAction("查看笔记")]=self.show_notes;callbacks[tools.addAction("随机决定…")]=self.decide;callbacks[tools.addAction("掷骰子")]=lambda:self.say(f"掷到了 {random.randint(1,6)}！","shock");callbacks[tools.addAction("查看剪贴板")]=lambda:self.say(QApplication.clipboard().text()[:180] or "剪贴板是空的。","shock",8)
+        links=menu.addMenu("🔗 快捷入口")
+        for name,url in self.data["links"].items():callbacks[links.addAction(name)]=lambda u=url:webbrowser.open(u)
+        links.addSeparator();callbacks[links.addAction("微信")]=lambda:self.launch_app("weixin://","https://weixin.qq.com/");links.addSeparator();callbacks[links.addAction("添加自定义网站…")]=self.add_link
+        capture=menu.addMenu("📷 截图与录屏");callbacks[capture.addAction("全屏截图")]=self.screenshot;callbacks[capture.addAction("打开录屏工具")]=self.screen_record
+        menu.addSeparator();callbacks[menu.addAction("📐 调节大小与长宽")]=self.show_size_settings;callbacks[menu.addAction("🥚 恢复正常大小" if self.tiny_mode else "🥚 隐藏成迷你蛋")]=self.toggle_tiny;callbacks[menu.addAction("取消开机自动启动" if self.autostart_enabled() else "开机自动启动")]=self.toggle_autostart
+        updates=menu.addMenu("🔄 软件更新");callbacks[updates.addAction("立即检查更新")]=lambda:self.check_for_updates(True);callbacks[updates.addAction("关闭自动检查" if self.data.get("auto_update",True) else "开启自动检查")]=self.toggle_auto_update
+        callbacks[menu.addAction("🔊 关闭语音播报" if self.data["speak"] else "🔈 开启语音播报")]=self.toggle_speech;callbacks[menu.addAction("退出奶蛋")]=QApplication.quit
+        selected=menu.exec(e.globalPos())
+        if selected in callbacks:callbacks[selected]()
+    def toggle_pause(self):self.paused=not self.paused;self.walking=False;self.data["quiet"]=self.paused;self.save_data();self.say("我会安静待着。" if self.paused else "我又可以到处玩啦！")
+    def toggle_speech(self):self.data["speak"]=not self.data["speak"];self.save_data();self.say("语音播报已"+("开启。" if self.data["speak"] else "关闭。"))
+    def change_city(self):
+        city,ok=QInputDialog.getText(self,"天气城市","输入城市英文名：",text=self.data["city"])
+        if ok and city.strip():self.data["city"]=city.strip();self.save_data();self.say("天气城市改成 "+city.strip()+" 啦！")
+
+def main():
+    if os.name=="nt":
+        try:
+            import ctypes; ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Naidan.DesktopPet.v2")
+        except (AttributeError,OSError):pass
+    app=QApplication(sys.argv);app.setWindowIcon(QIcon(str(ASSETS/"奶蛋.ico")));app.setQuitOnLastWindowClosed(False);pet=FuzzyPet();pet.setup_tray();pet.show();app.aboutToQuit.connect(pet.save_timer_state);sys.exit(app.exec())
+if __name__=="__main__":main()
