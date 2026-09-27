@@ -5,23 +5,26 @@ from datetime import datetime
 from pathlib import Path
 from PySide6.QtCore import QObject, QPoint, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QTransform
-from PySide6.QtWidgets import QApplication, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSystemTrayIcon, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
 SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
-APP_VERSION="2.1.1"
+APP_VERSION="2.2.0"
 # A GitHub Releases API endpoint will be inserted after the user's publishing
 # repository is connected. pet_data.json can override it with update_api_url.
 UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
 if getattr(sys,"frozen",False):
     DATA_DIR=Path(os.environ.get("APPDATA",Path.home()))/"奶蛋"; DATA_DIR.mkdir(parents=True,exist_ok=True); DATA=DATA_DIR/"pet_data.json"
 else: DATA=SCRIPT_ROOT/"pet_data.json"
-DEFAULT={"city":"London","quiet":False,"speak":False,"notes":[],"pet_scale":100,"width_scale":100,"height_scale":100,"saved_timers":[],"stopwatch_started":None,"auto_update":True,"update_api_url":"","links":{"ChatGPT":"https://chatgpt.com/","小红书":"https://www.xiaohongshu.com/","Portico":"https://evision.ucl.ac.uk/urd/sits.urd/run/siw_lgn","Gmail":"https://mail.google.com/mail/u/0/?tab=rm&ogbl#inbox","timetable":"https://timetable.ucl.ac.uk/my-timetable"}}
+DEFAULT={"city":"London","quiet":False,"speak":False,"voice":"","voice_rate":0,"notes":[],"pet_scale":70,"width_scale":100,"height_scale":100,"opacity":100,"layer_mode":"top","position_locked":False,"click_through":False,"chatter":"low","screen_mode":"current","settings_v2_2":True,"saved_timers":[],"stopwatch_started":None,"auto_update":True,"update_api_url":"","links":{"ChatGPT":"https://chatgpt.com/","小红书":"https://www.xiaohongshu.com/","Portico":"https://evision.ucl.ac.uk/urd/sits.urd/run/siw_lgn","Gmail":"https://mail.google.com/mail/u/0/?tab=rm&ogbl#inbox","timetable":"https://timetable.ucl.ac.uk/my-timetable"}}
 LEGACY_LINKS={"Imperial Blackboard","My Imperial","Imperial Outlook","YouTube","Spotify","Portical"}
 
 def load_data():
     data=json.loads(json.dumps(DEFAULT))
     try:
         saved=json.loads(DATA.read_text(encoding="utf-8")); data.update({k:v for k,v in saved.items() if k!="links"})
+        if not saved.get("settings_v2_2"):
+            if int(saved.get("pet_scale",100))==100:data["pet_scale"]=70
+            data["settings_v2_2"]=True
         data["links"].update({k:v for k,v in saved.get("links",{}).items() if k not in LEGACY_LINKS})
     except (OSError,ValueError,TypeError): pass
     return data
@@ -48,7 +51,40 @@ class SizeWindow(QWidget):
     def changed(self,key,value,label):
         label.setText(f"{value}%"); self.pet.data[key]=value; self.pet.update_window_size(); self.pet.update(); self.pet.save_data()
     def reset(self):
-        for slider in self.sliders.values(): slider.setValue(100)
+        self.sliders["pet_scale"].setValue(70); self.sliders["width_scale"].setValue(100); self.sliders["height_scale"].setValue(100)
+
+class SettingsWindow(QWidget):
+    def __init__(self,pet):
+        super().__init__(); self.pet=pet; self.setWindowTitle("奶蛋设置中心"); self.setMinimumWidth(430); layout=QVBoxLayout(self)
+        appearance=QGroupBox("外观"); form=QFormLayout(appearance); self.sliders={}
+        for text,key,low,high in (("整体大小","pet_scale",50,160),("横向宽度","width_scale",50,150),("纵向高度","height_scale",50,150),("透明度","opacity",40,100)):
+            row=QHBoxLayout(); slider=QSlider(Qt.Horizontal); slider.setRange(low,high); slider.setValue(int(pet.data.get(key,70 if key=="pet_scale" else 100))); value=QLabel(f"{slider.value()}%"); value.setFixedWidth(45)
+            slider.valueChanged.connect(lambda v,k=key,l=value:self.slider_changed(k,v,l)); row.addWidget(slider);row.addWidget(value);form.addRow(text,row);self.sliders[key]=slider
+        self.layer=QComboBox();self.layer.addItems(["始终置顶","普通窗口层级","置于其他窗口下方"]);self.layer.setCurrentIndex({"top":0,"normal":1,"bottom":2}.get(pet.data.get("layer_mode"),0));self.layer.currentIndexChanged.connect(self.layer_changed);form.addRow("奶蛋图层",self.layer)
+        layout.addWidget(appearance)
+        behaviour=QGroupBox("活动方式"); bform=QFormLayout(behaviour)
+        self.quiet=QCheckBox("固定在原地，但仍会做表情和说话");self.quiet.setChecked(bool(pet.data.get("quiet")));self.quiet.toggled.connect(pet.set_quiet);bform.addRow("安静奶蛋",self.quiet)
+        self.locked=QCheckBox("禁止拖动奶蛋");self.locked.setChecked(bool(pet.data.get("position_locked")));self.locked.toggled.connect(lambda v:self.set_value("position_locked",v));bform.addRow("位置锁定",self.locked)
+        self.clickthrough=QCheckBox("鼠标点击穿过奶蛋（从托盘关闭）");self.clickthrough.setChecked(bool(pet.data.get("click_through")));self.clickthrough.toggled.connect(pet.set_click_through);bform.addRow("点击穿透",self.clickthrough)
+        self.chatter=QComboBox();self.chatter.addItems(["关闭","低","中","高"]);self.chatter.setCurrentIndex({"off":0,"low":1,"medium":2,"high":3}.get(pet.data.get("chatter"),1));self.chatter.currentIndexChanged.connect(self.chatter_changed);bform.addRow("主动说话频率",self.chatter)
+        self.screen=QComboBox();self.screen.addItems(["只在当前显示器","允许跨显示器"]);self.screen.setCurrentIndex(0 if pet.data.get("screen_mode","current")=="current" else 1);self.screen.currentIndexChanged.connect(lambda i:self.set_value("screen_mode","current" if i==0 else "all"));bform.addRow("活动范围",self.screen)
+        layout.addWidget(behaviour)
+        voice=QGroupBox("语音");vform=QFormLayout(voice)
+        self.speech=QCheckBox("开启语音播报");self.speech.setChecked(bool(pet.data.get("speak")));self.speech.toggled.connect(lambda v:self.set_value("speak",v));vform.addRow(self.speech)
+        self.voice=QComboBox(); voices=pet.available_voices();self.voice.addItems(["系统默认"]+voices);saved=pet.data.get("voice","");self.voice.setCurrentText(saved if saved in voices else "系统默认");self.voice.currentTextChanged.connect(lambda v:self.set_value("voice","" if v=="系统默认" else v));vform.addRow("声音",self.voice)
+        self.rate=QSpinBox();self.rate.setRange(-5,5);self.rate.setValue(int(pet.data.get("voice_rate",0)));self.rate.valueChanged.connect(lambda v:self.set_value("voice_rate",v));vform.addRow("语速",self.rate)
+        preview=QPushButton("试听声音");preview.clicked.connect(lambda:pet.speak_text("你好呀，我是奶蛋。"));vform.addRow(preview);layout.addWidget(voice)
+        row=QHBoxLayout();reset=QPushButton("恢复默认外观");reset.clicked.connect(self.reset_appearance);close=QPushButton("完成");close.clicked.connect(self.close);row.addWidget(reset);row.addStretch();row.addWidget(close);layout.addLayout(row)
+    def set_value(self,key,value):self.pet.data[key]=value;self.pet.save_data()
+    def slider_changed(self,key,value,label):
+        label.setText(f"{value}%");self.pet.data[key]=value
+        if key=="opacity":self.pet.setWindowOpacity(value/100)
+        else:self.pet.update_window_size();self.pet.update()
+        self.pet.save_data()
+    def layer_changed(self,index):self.pet.set_layer_mode(("top","normal","bottom")[index])
+    def chatter_changed(self,index):self.pet.data["chatter"]=("off","low","medium","high")[index];self.pet.schedule_chatter();self.pet.save_data()
+    def reset_appearance(self):
+        self.sliders["pet_scale"].setValue(70);self.sliders["width_scale"].setValue(100);self.sliders["height_scale"].setValue(100);self.sliders["opacity"].setValue(100);self.layer.setCurrentIndex(0)
 
 class TimerWindow(QWidget):
     def __init__(self,pet):
@@ -90,9 +126,9 @@ class FuzzyPet(QWidget):
             p=QPixmap(str(ASSETS/f"{name}.png"))
             if p.isNull(): raise FileNotFoundError(ASSETS/f"{name}.png")
             self.frames[name]=p
-        self.walking=False; self.paused=False; self.data["quiet"]=False; self.move_dx=random.choice((-2,0,2)); self.move_dy=random.choice((-2,0,2)); self.dragging=False; self.drag_offset=QPoint(); self.press_global=QPoint(); self.press_time=0.0
+        self.walking=False; self.paused=bool(self.data.get("quiet")); self.move_dx=random.choice((-2,0,2)); self.move_dy=random.choice((-2,0,2)); self.dragging=False; self.drag_offset=QPoint(); self.press_global=QPoint(); self.press_time=0.0
         self.tiny_mode=False; self.normal_pos=QPoint()
-        self.last_interaction=time.monotonic(); self.next_decision=time.monotonic()+2; self.expression="normal"; self.expression_until=0.; self.hop_started=0.; self.roll_speed=0.; self.roll_angle=0.; self.roll_spin_speed=0.; self.rolling_until=0.; self.bubble=""; self.bubble_until=0.
+        self.last_interaction=time.monotonic(); self.next_decision=time.monotonic()+2; self.next_chatter=time.monotonic()+60; self.expression="normal"; self.expression_until=0.; self.hop_started=0.; self.roll_speed=0.; self.roll_angle=0.; self.roll_spin_speed=0.; self.rolling_until=0.; self.bubble=""; self.bubble_until=0.
         wall=time.time(); self.timers=[]
         for item in self.data.get("saved_timers",[]):
             try:
@@ -102,17 +138,50 @@ class FuzzyPet(QWidget):
         try:self.stopwatch_started=float(self.data["stopwatch_started"]) if self.data.get("stopwatch_started") else None
         except (TypeError,ValueError):self.stopwatch_started=None
         self.notes_window=None; self.update_signals=UpdateSignals(); self.update_signals.checked.connect(self.update_check_finished); self.update_signals.downloaded.connect(self.update_download_finished); self.update_info=None; self.update_busy=False
-        self.record_watch_started=0.; self.record_candidate=None; self.record_size=-1; self.record_stable=0; self.size_window=None; self.timer_window=None
+        self.record_watch_started=0.; self.record_candidate=None; self.record_size=-1; self.record_stable=0; self.size_window=None; self.settings_window=None; self.timer_window=None
+        self.apply_window_mode(False);self.setWindowOpacity(float(self.data.get("opacity",100))/100);self.schedule_chatter()
         self.update_window_size(); b=QApplication.primaryScreen().availableGeometry(); self.move(b.right()-self.width()-25,b.bottom()-self.height()+5)
         self.timer=QTimer(self); self.timer.setInterval(40); self.timer.timeout.connect(self.tick); self.timer.start()
         if self.data.get("auto_update",True): QTimer.singleShot(3500,lambda:self.check_for_updates(False))
     def save_data(self):
         try: DATA.write_text(json.dumps(self.data,ensure_ascii=False,indent=2),encoding="utf-8")
         except OSError: pass
+    def schedule_chatter(self):
+        ranges={"off":(86400,86400),"low":(180,360),"medium":(90,180),"high":(35,80)};lo,hi=ranges.get(self.data.get("chatter","low"),(180,360));self.next_chatter=time.monotonic()+random.uniform(lo,hi)
+    def available_voices(self):
+        if os.name!="nt":return []
+        command='[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices() | ForEach-Object {$_.VoiceInfo.Name}'
+        try:
+            result=subprocess.run(["powershell","-NoProfile","-Command",command],capture_output=True,text=True,encoding="utf-8",timeout=5,creationflags=0x08000000)
+            return [x.strip() for x in result.stdout.splitlines() if x.strip()]
+        except (OSError,subprocess.SubprocessError):return []
+    def speak_text(self,text):
+        if os.name!="nt":return
+        safe=text.replace("'","''");voice=str(self.data.get("voice","")).replace("'","''");rate=max(-5,min(5,int(self.data.get("voice_rate",0))))
+        select=f"$s.SelectVoice('{voice}');" if voice else ""
+        command=f"Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; {select}$s.Rate={rate}; $s.Speak('{safe}')"
+        try:subprocess.Popen(["powershell","-NoProfile","-Command",command],creationflags=0x08000000)
+        except OSError:pass
+    def apply_window_mode(self,show_again=True):
+        was_visible=self.isVisible();flags=Qt.Window|Qt.FramelessWindowHint;mode=self.data.get("layer_mode","top")
+        if mode=="top":flags|=Qt.WindowStaysOnTopHint
+        elif mode=="bottom":flags|=Qt.WindowStaysOnBottomHint
+        self.setWindowFlags(flags);self.setAttribute(Qt.WA_TranslucentBackground);self.setAttribute(Qt.WA_TransparentForMouseEvents,bool(self.data.get("click_through")))
+        if show_again and was_visible:self.show()
+    def set_layer_mode(self,mode):self.data["layer_mode"]=mode;self.save_data();self.apply_window_mode();self.say("图层设置已更新。","happy",4)
+    def set_click_through(self,enabled):
+        self.data["click_through"]=bool(enabled);self.save_data();self.setAttribute(Qt.WA_TransparentForMouseEvents,bool(enabled))
+        if getattr(self,"tray_clickthrough",None):self.tray_clickthrough.setChecked(bool(enabled))
+        self.say("已开启点击穿透，可从托盘关闭。" if enabled else "已关闭点击穿透。","happy",5)
+    def set_quiet(self,enabled):
+        self.paused=bool(enabled);self.data["quiet"]=self.paused;self.walking=False;self.rolling_until=0.;self.roll_speed=0.;self.save_data();self.say("安静奶蛋会留在这里陪你。" if self.paused else "奶蛋又可以四处活动啦。","happy",5)
+        if getattr(self,"tray_quiet",None):self.tray_quiet.setChecked(self.paused)
     def save_timer_state(self):
         self.data["saved_timers"]=[{"deadline":deadline,"label":label} for deadline,label in self.timers]
         self.data["stopwatch_started"]=self.stopwatch_started; self.save_data()
     def bounds(self):
+        if self.data.get("screen_mode","current")=="all":
+            screens=QApplication.screens(); left=min(s.geometry().left() for s in screens);top=min(s.geometry().top() for s in screens);right=max(s.geometry().right() for s in screens);bottom=max(s.geometry().bottom() for s in screens);return QRect(left,top,right-left+1,bottom-top+1)
         s=QApplication.screenAt(self.frameGeometry().center()); return (s or QApplication.primaryScreen()).availableGeometry()
     def render_size(self,key="idle"):
         overall=float(self.data.get("pet_scale",100))/100; wide=float(self.data.get("width_scale",100))/100; tall=float(self.data.get("height_scale",100))/100
@@ -128,9 +197,12 @@ class FuzzyPet(QWidget):
             if wall>=deadline:
                 self.timers.remove((deadline,message)); timers_changed=True; QApplication.beep(); QTimer.singleShot(350,QApplication.beep); QTimer.singleShot(700,QApplication.beep); self.say(message,"happy",8); QMessageBox.information(None,"奶蛋提醒你",message)
         if timers_changed:self.save_timer_state()
+        if now>=self.next_chatter and self.data.get("chatter","low")!="off":
+            lines=[("今天也要照顾好自己呀。","happy"),("你现在在忙什么呢？","shock"),("要记得喝水哦。","happy"),("累了就休息一下吧。","shy"),("奶蛋在这里陪你。","heart")]
+            text,face=random.choice(lines);self.say(text,face,5);self.schedule_chatter()
         if now>=self.expression_until and self.expression!="sleep": self.expression="normal"
         if now>=self.bubble_until: self.bubble=""
-        if not self.dragging and now<self.rolling_until:
+        if not self.paused and not self.dragging and now<self.rolling_until:
             b=self.bounds(); x=self.x()+round(self.roll_speed)
             if x<=b.left() or x>=b.right()-self.width()+1: self.roll_speed*=-.92; x=max(b.left(),min(x,b.right()-self.width()+1))
             self.move(x,self.y()); self.roll_angle+=self.roll_spin_speed; self.roll_speed*=.995
@@ -179,10 +251,7 @@ class FuzzyPet(QWidget):
             p.setBrush(QColor(255,255,255,238)); p.setPen(QPen(QColor(240,180,55),2)); p.drawRoundedRect(r,10,10); p.setPen(QColor(55,45,35)); p.setFont(font); p.drawText(r.adjusted(8,5,-8,-5),Qt.AlignCenter|Qt.TextWordWrap,display_text)
     def say(self,text,expression="happy",seconds=4):
         self.bubble=text; self.bubble_until=time.monotonic()+seconds; self.expression=expression; self.expression_until=time.monotonic()+seconds; self.walking=False; self.last_interaction=time.monotonic()
-        if self.data.get("speak"):
-            safe=text.replace("'","''")
-            try: subprocess.Popen(["powershell","-NoProfile","-Command",f"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{safe}')"],creationflags=0x08000000)
-            except OSError: pass
+        if self.data.get("speak"):self.speak_text(text)
         self.update()
     def start_roll(self,speed=9,seconds=2.6):
         self.walking=False; self.roll_speed=speed; self.roll_spin_speed=(14.0 if abs(speed)<1 else speed*2.4); self.rolling_until=time.monotonic()+seconds; self.last_interaction=time.monotonic()
@@ -342,11 +411,14 @@ class FuzzyPet(QWidget):
             self.normal_pos=self.pos(); self.tiny_mode=True; self.paused=True; self.walking=False; self.setFixedSize(78,78)
             b=self.bounds(); self.move(b.right()-self.width()+1,b.top()+(b.height()-self.height())//2)
         else:
-            self.tiny_mode=False; self.setFixedSize(330,350); self.move(self.normal_pos); self.paused=False; self.update_window_size()
+            self.tiny_mode=False; self.setFixedSize(330,350); self.move(self.normal_pos); self.paused=bool(self.data.get("quiet")); self.update_window_size()
         self.update()
     def show_size_settings(self):
         if self.tiny_mode:self.toggle_tiny()
         self.size_window=SizeWindow(self); self.size_window.show(); self.size_window.raise_()
+    def show_settings(self):
+        if self.tiny_mode:self.toggle_tiny()
+        self.settings_window=SettingsWindow(self);self.settings_window.show();self.settings_window.raise_();self.settings_window.activateWindow()
     def show_timer_window(self):
         self.timer_window=TimerWindow(self); self.timer_window.show(); self.timer_window.raise_()
     def restore_pet(self):
@@ -384,24 +456,27 @@ class FuzzyPet(QWidget):
         tray_menu=QMenu(); restore=tray_menu.addAction("显示奶蛋"); restore.triggered.connect(self.restore_pet)
         timer=tray_menu.addAction("打开计时面板"); timer.triggered.connect(self.show_timer_window)
         tiny=tray_menu.addAction("隐藏成迷你蛋"); tiny.triggered.connect(self.toggle_tiny)
-        tray_menu.addSeparator(); self.tray_autostart=tray_menu.addAction("随 Windows 自动启动"); self.tray_autostart.setCheckable(True); self.tray_autostart.setChecked(self.autostart_enabled()); self.tray_autostart.triggered.connect(lambda checked:self.toggle_autostart())
+        tray_menu.addSeparator();settings=tray_menu.addAction("打开设置中心");settings.triggered.connect(self.show_settings)
+        quiet=tray_menu.addAction("安静奶蛋");quiet.setCheckable(True);quiet.setChecked(bool(self.data.get("quiet")));quiet.triggered.connect(self.set_quiet);self.tray_quiet=quiet
+        clickthrough=tray_menu.addAction("点击穿透");clickthrough.setCheckable(True);clickthrough.setChecked(bool(self.data.get("click_through")));clickthrough.triggered.connect(self.set_click_through);self.tray_clickthrough=clickthrough
+        tray_menu.addSeparator(); self.tray_autostart=tray_menu.addAction("🚀 随 Windows 自动启动"); self.tray_autostart.setCheckable(True); self.tray_autostart.setChecked(self.autostart_enabled()); self.tray_autostart.triggered.connect(lambda checked:self.toggle_autostart())
         tray_menu.addSeparator(); quit_action=tray_menu.addAction("退出奶蛋"); quit_action.triggered.connect(QApplication.quit)
         self.tray.setContextMenu(tray_menu); self.tray.activated.connect(lambda reason:self.restore_pet() if reason==QSystemTrayIcon.ActivationReason.Trigger else None); self.tray.show()
     def mouseDoubleClickEvent(self,e):
         if self.tiny_mode and e.button()==Qt.LeftButton:self.toggle_tiny();e.accept()
     def mousePressEvent(self,e):
         self.last_interaction=time.monotonic()
-        if e.button()==Qt.LeftButton:self.press_global=e.globalPosition().toPoint();self.drag_offset=self.press_global-self.pos();self.press_time=time.monotonic();self.dragging=False;e.accept()
+        if e.button()==Qt.LeftButton:
+            self.press_global=e.globalPosition().toPoint();self.drag_offset=self.press_global-self.pos();self.press_time=time.monotonic();self.dragging=False;e.accept()
     def mouseMoveEvent(self,e):
-        if e.buttons()&Qt.LeftButton:
+        if e.buttons()&Qt.LeftButton and not self.data.get("position_locked"):
             cur=e.globalPosition().toPoint()
             if (cur-self.press_global).manhattanLength()>6:self.dragging=True;self.walking=False;self.move(cur-self.drag_offset)
             e.accept()
     def mouseReleaseEvent(self,e):
         if e.button()!=Qt.LeftButton:return
         if self.dragging:
-            delta=e.globalPosition().toPoint().x()-self.press_global.x();self.dragging=False
-            if abs(delta)>90:self.start_roll(max(-13,min(13,delta/16)),2.4)
+            self.dragging=False;self.walking=False;self.rolling_until=0.;self.roll_speed=0.;self.next_decision=time.monotonic()+8;self.last_interaction=time.monotonic()
         elif time.monotonic()-self.press_time<1:self.set_expression(random.choice(("heart","angel","happy","shy","shock")))
         e.accept()
     def contextMenuEvent(self,e):
@@ -417,12 +492,15 @@ class FuzzyPet(QWidget):
         for name,url in self.data["links"].items():callbacks[links.addAction(name)]=lambda u=url:webbrowser.open(u)
         links.addSeparator();callbacks[links.addAction("微信")]=lambda:self.launch_app("weixin://","https://weixin.qq.com/");links.addSeparator();callbacks[links.addAction("添加自定义网站…")]=self.add_link
         capture=menu.addMenu("📷 截图与录屏");callbacks[capture.addAction("全屏截图")]=self.screenshot;callbacks[capture.addAction("打开录屏工具")]=self.screen_record
-        menu.addSeparator();callbacks[menu.addAction("📐 调节大小与长宽")]=self.show_size_settings;callbacks[menu.addAction("🥚 恢复正常大小" if self.tiny_mode else "🥚 隐藏成迷你蛋")]=self.toggle_tiny;callbacks[menu.addAction("取消开机自动启动" if self.autostart_enabled() else "开机自动启动")]=self.toggle_autostart
+        menu.addSeparator();callbacks[menu.addAction("⚙ 奶蛋设置中心")]=self.show_settings
+        quiet_action=menu.addAction("🤫 安静奶蛋");quiet_action.setCheckable(True);quiet_action.setChecked(bool(self.data.get("quiet")));callbacks[quiet_action]=lambda:self.set_quiet(not self.data.get("quiet"))
+        callbacks[menu.addAction("🥚 恢复正常大小" if self.tiny_mode else "🥚 隐藏成迷你蛋")]=self.toggle_tiny
+        autostart=menu.addAction("🚀 开机自动启动");autostart.setCheckable(True);autostart.setChecked(self.autostart_enabled());callbacks[autostart]=self.toggle_autostart
         updates=menu.addMenu("🔄 软件更新");callbacks[updates.addAction("立即检查更新")]=lambda:self.check_for_updates(True);callbacks[updates.addAction("关闭自动检查" if self.data.get("auto_update",True) else "开启自动检查")]=self.toggle_auto_update
         callbacks[menu.addAction("🔊 关闭语音播报" if self.data["speak"] else "🔈 开启语音播报")]=self.toggle_speech;callbacks[menu.addAction("退出奶蛋")]=QApplication.quit
         selected=menu.exec(e.globalPos())
         if selected in callbacks:callbacks[selected]()
-    def toggle_pause(self):self.paused=not self.paused;self.walking=False;self.data["quiet"]=self.paused;self.save_data();self.say("我会安静待着。" if self.paused else "我又可以到处玩啦！")
+    def toggle_pause(self):self.set_quiet(not self.data.get("quiet"))
     def toggle_speech(self):self.data["speak"]=not self.data["speak"];self.save_data();self.say("语音播报已"+("开启。" if self.data["speak"] else "关闭。"))
     def change_city(self):
         city,ok=QInputDialog.getText(self,"天气城市","输入城市英文名：",text=self.data["city"])
