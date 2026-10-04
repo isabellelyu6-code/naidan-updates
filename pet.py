@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, 
 from PySide6.QtWidgets import QApplication, QCheckBox, QColorDialog, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
 SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
-APP_VERSION="2.3.0"
+APP_VERSION="2.3.1"
 # A GitHub Releases API endpoint will be inserted after the user's publishing
 # repository is connected. pet_data.json can override it with update_api_url.
 UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
@@ -20,12 +20,18 @@ DEFAULT={"city":"London","quiet":False,"speak":False,"voice":"","voice_rate":0,"
 LEGACY_LINKS={"Imperial Blackboard","My Imperial","Imperial Outlook","YouTube","Spotify","Portical"}
 
 COSTUMES={
-    "none":"原味奶蛋","demon":"恶魔奶蛋",
+    "none":"原味奶蛋","angel":"天使奶蛋","demon":"恶魔奶蛋",
     "aries":"白羊座","taurus":"金牛座","gemini":"双子座","cancer":"巨蟹座","leo":"狮子座","virgo":"处女座","libra":"天秤座","scorpio":"天蝎座","sagittarius":"射手座","capricorn":"摩羯座","aquarius":"水瓶座","pisces":"双鱼座",
     "rat":"生肖鼠","ox":"生肖牛","tiger":"生肖虎","rabbit":"生肖兔","dragon":"生肖龙","snake":"生肖蛇","horse":"生肖马","goat":"生肖羊","monkey":"生肖猴","rooster":"生肖鸡","dog":"生肖狗","pig":"生肖猪",
 }
+COSTUME_CATEGORIES={
+    "原始与特殊":["none","angel","demon"],
+    "十二生肖":["rat","ox","tiger","rabbit","dragon","snake","horse","goat","monkey","rooster","dog","pig"],
+    "十二星座":["aries","taurus","gemini","cancer","leo","virgo","libra","scorpio","sagittarius","capricorn","aquarius","pisces"],
+}
 COSTUME_LINES={
     "none":["今天不换衣服，我就是最经典的原味奶蛋！","原味奶蛋也超级可爱呀。"],
+    "angel":["我是天使奶蛋，给你送来一点好运！","天使奶蛋来守护你啦。"],
     "demon":["我是恶魔奶蛋，正在策划一个可爱的坏主意！","小恶魔登场，不许被我萌到哦。"],
     "aries":["我是白羊座奶蛋，今天也要勇敢向前冲！"],"taurus":["我是金牛座奶蛋，稳稳地陪着你。"],"gemini":["我是双子座奶蛋，猜猜现在是哪一个我？"],"cancer":["我是巨蟹座奶蛋，把温柔都留给你。"],"leo":["我是狮子座奶蛋，今天也闪闪发光！"],"virgo":["我是处女座奶蛋，把今天整理得漂漂亮亮。"],"libra":["我是天秤座奶蛋，可爱当然要刚刚好。"],"scorpio":["我是天蝎座奶蛋，神秘一下也很可爱。"],"sagittarius":["我是射手座奶蛋，向快乐出发！"],"capricorn":["我是摩羯座奶蛋，认真陪你完成今天。"],"aquarius":["我是水瓶座奶蛋，给你倒一杯好心情。"],"pisces":["我是双鱼座奶蛋，送你一颗软绵绵的梦。"],
     "rat":["我是生肖鼠奶蛋，机灵的小好运来啦！"],"ox":["我是生肖牛奶蛋，今天也稳稳加油。"],"tiger":["我是生肖虎奶蛋，嗷呜——但一点也不凶。"],"rabbit":["我是生肖兔奶蛋，送你一根好运胡萝卜！"],"dragon":["我是生肖龙奶蛋，今天一定龙运当头！"],"snake":["我是生肖蛇奶蛋，悄悄把好运绕给你。"],"horse":["我是生肖马奶蛋，马上就有好事发生！"],"goat":["我是生肖羊奶蛋，软绵绵地陪你。"],"monkey":["我是生肖猴奶蛋，今天也要机灵又开心。"],"rooster":["我是生肖鸡奶蛋，咕咕咕，起床啦！"],"dog":["我是生肖狗奶蛋，会一直忠实地陪着你。"],"pig":["我是生肖猪奶蛋，圆滚滚的福气来啦！"],
@@ -90,7 +96,9 @@ class SettingsWindow(QWidget):
         layout.addWidget(behaviour)
         costume=QGroupBox("装扮");cform=QFormLayout(costume)
         self.costume_mode=QComboBox();self.costume_mode.addItems(["保持原味","固定装扮","随机轮换"]);self.costume_mode.setCurrentIndex({"none":0,"fixed":1,"random":2}.get(pet.data.get("costume_mode"),0));self.costume_mode.currentIndexChanged.connect(self.costume_mode_changed);cform.addRow("换装方式",self.costume_mode)
-        self.costume=QComboBox();self.costume.addItems(list(COSTUMES.values()));current=COSTUMES.get(pet.data.get("costume","none"),COSTUMES["none"]);self.costume.setCurrentText(current);self.costume.currentTextChanged.connect(self.costume_changed);cform.addRow("当前装扮",self.costume)
+        self.costume_category=QComboBox();self.costume_category.addItems(list(COSTUME_CATEGORIES));self.costume_category.currentTextChanged.connect(self.costume_category_changed);cform.addRow("装扮类别",self.costume_category)
+        self.costume=QComboBox();self.costume.currentTextChanged.connect(self.costume_changed);cform.addRow("当前装扮",self.costume)
+        current_key=pet.data.get("costume","none");category=next((c for c,keys in COSTUME_CATEGORIES.items() if current_key in keys),"原始与特殊");self.costume_category.setCurrentText(category);self.costume_category_changed(category);self.costume.setCurrentText(COSTUMES.get(current_key,COSTUMES["none"]))
         layout.addWidget(costume)
         voice=QGroupBox("语音");vform=QFormLayout(voice)
         self.speech=QCheckBox("开启语音播报");self.speech.setChecked(bool(pet.data.get("speak")));self.speech.toggled.connect(lambda v:self.set_value("speak",v));vform.addRow(self.speech)
@@ -111,6 +119,9 @@ class SettingsWindow(QWidget):
         color=QColorDialog.getColor(QColor(self.pet.data.get("skin_color","#f6c94f")),self,"选择奶蛋肤色")
         if color.isValid():self.pet.data["skin_color"]=color.name();self.pet.set_skin_mode("custom");self.color_mode.setCurrentIndex(1)
     def costume_mode_changed(self,index):self.pet.set_costume_mode(("none","fixed","random")[index])
+    def costume_category_changed(self,category):
+        current=self.costume.currentText();self.costume.blockSignals(True);self.costume.clear();self.costume.addItems([COSTUMES[k] for k in COSTUME_CATEGORIES.get(category,[])]);self.costume.blockSignals(False)
+        if current in [self.costume.itemText(i) for i in range(self.costume.count())]:self.costume.setCurrentText(current)
     def costume_changed(self,label):
         key=next((k for k,v in COSTUMES.items() if v==label),"none");self.pet.set_costume(key,announce=False)
     def chatter_changed(self,index):self.pet.data["chatter"]=("off","low","medium","high")[index];self.pet.schedule_chatter();self.pet.save_data()
@@ -160,7 +171,7 @@ class FuzzyPet(QWidget):
         self.costume_frames={}
         for name in COSTUMES:
             if name=="none":continue
-            p=QPixmap(str(ASSETS/"costumes"/f"{name}.png"))
+            p=self.frames["angel"] if name=="angel" else QPixmap(str(ASSETS/"costumes"/f"{name}.png"))
             if not p.isNull():self.costume_frames[name]=p
         self.tint_cache={};self.current_costume=str(self.data.get("costume","none"));self.next_costume_change=time.monotonic()+10
         self.walking=False; self.paused=bool(self.data.get("quiet")); self.move_dx=random.choice((-2,0,2)); self.move_dy=random.choice((-2,0,2)); self.dragging=False; self.drag_offset=QPoint(); self.press_global=QPoint(); self.press_time=0.0
@@ -204,7 +215,7 @@ class FuzzyPet(QWidget):
         self.set_costume(random.choice(choices),announce=True)
     def japanese_costume_line(self,name,fallback):
         if self.data.get("voice_language")!="ja":return fallback
-        label=COSTUMES.get(name,"ナイダン");translations={"none":"いつものナイダンだよ。","demon":"小悪魔ナイダンだよ。かわいいいたずらを考え中！"}
+        label=COSTUMES.get(name,"ナイダン");translations={"none":"いつものナイダンだよ。","angel":"天使のナイダンだよ。君を守りに来たよ！","demon":"小悪魔ナイダンだよ。かわいいいたずらを考え中！"}
         return translations.get(name,f"今は{label}のナイダンだよ。")
     def colored_frame(self,key,source):
         mode=self.data.get("skin_mode","default")
@@ -309,7 +320,10 @@ class FuzzyPet(QWidget):
             key="costume_"+costume;source=self.costume_frames[costume]
         else:
             key="roll" if rolling else (self.expression if self.expression in ("heart","angel","rest") else ("step" if self.walking and not self.dragging and int(now*5)%2 else "idle"));source=self.frames[key]
-        source=self.colored_frame(key,source);target_w,target_h=self.render_size("idle" if key.startswith("costume_") or key=="rest" else key); frame=source.scaled(target_w,target_h,Qt.IgnoreAspectRatio,Qt.SmoothTransformation)
+        source=self.colored_frame(key,source);target_w,target_h=self.render_size("idle" if key.startswith("costume_") or key=="rest" else key)
+        # Keep every outfit's native proportions. The old IgnoreAspectRatio
+        # scaling was what made square costume art look visibly squashed.
+        frame=source.scaledToHeight(target_h,Qt.SmoothTransformation) if key.startswith("costume_") else source.scaled(target_w,target_h,Qt.KeepAspectRatio,Qt.SmoothTransformation)
         if not rolling: frame=frame.scaledToHeight(round(frame.height()*(1 if self.dragging else 1+.009*math.sin(now*2.8))),Qt.SmoothTransformation)
         x=(self.width()-frame.width())//2; y=self.height()-frame.height()-4; hop=now-self.hop_started
         if 0<=hop<.55: y-=round(28*math.sin(math.pi*hop/.55))
@@ -574,8 +588,16 @@ class FuzzyPet(QWidget):
         if e.button()!=Qt.LeftButton:return
         if self.dragging:
             self.dragging=False;self.walking=False;self.rolling_until=0.;self.roll_speed=0.;self.next_decision=time.monotonic()+8;self.last_interaction=time.monotonic()
-        elif time.monotonic()-self.press_time<1:self.set_expression(random.choice(("heart","angel","happy","shy","shock")))
+        elif time.monotonic()-self.press_time<1:self.random_click_interaction()
         e.accept()
+    def random_click_interaction(self):
+        choice=random.random()
+        if choice<.38:self.set_expression(random.choice(("heart","happy","shy","shock","cool","eat")))
+        elif choice<.76:
+            self.data["costume_mode"]="fixed";self.random_costume()
+        elif choice<.9:
+            self.hop_started=time.monotonic();self.say(random.choice(("跳一下！","奶蛋弹起来啦！")),"happy",3)
+        else:self.start_roll(.01,1.3)
     def contextMenuEvent(self,e):
         menu=QMenu(self); callbacks={}
         act=menu.addMenu("🎭 动作")
@@ -586,8 +608,10 @@ class FuzzyPet(QWidget):
         callbacks[dress.addAction("原味奶蛋（不换装）")]=lambda:self.set_costume_mode("none")
         callbacks[dress.addAction("随机换装")]=lambda:self.set_costume_mode("random")
         dress.addSeparator()
-        for key,label in COSTUMES.items():
-            if key!="none":callbacks[dress.addAction(label)]=lambda k=key:(self.set_costume_mode("fixed"),self.set_costume(k))
+        for category,keys in COSTUME_CATEGORIES.items():
+            submenu=dress.addMenu(category)
+            for key in keys:
+                if key!="none":callbacks[submenu.addAction(COSTUMES[key])]=lambda k=key:(self.set_costume_mode("fixed"),self.set_costume(k))
         info=menu.addMenu("🌦 信息播报"); callbacks[info.addAction(f"{self.data['city']} 天气")]=self.weather; callbacks[info.addAction("当前时间")]=lambda:self.say(datetime.now().strftime("现在是 %H:%M。")); callbacks[info.addAction("今天日期")]=self.overview; callbacks[info.addAction("今日概览")]=lambda:(self.overview(),QTimer.singleShot(2500,self.weather)); info.addSeparator(); callbacks[info.addAction("修改天气城市…")]=self.change_city
         tools=menu.addMenu("⏱ 小工具"); callbacks[tools.addAction("打开计时面板")]=self.show_timer_window
         callbacks[tools.addAction("快速提醒…")]=lambda:self.custom_timer(True);callbacks[tools.addAction("快速记事…")]=self.quick_note;callbacks[tools.addAction("查看笔记")]=self.show_notes;callbacks[tools.addAction("随机决定…")]=self.decide;callbacks[tools.addAction("掷骰子")]=lambda:self.say(f"掷到了 {random.randint(1,6)}！","shock");callbacks[tools.addAction("查看剪贴板")]=lambda:self.say(QApplication.clipboard().text()[:180] or "剪贴板是空的。","shock",8)
