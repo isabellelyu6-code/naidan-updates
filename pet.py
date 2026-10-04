@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, 
 from PySide6.QtWidgets import QApplication, QCheckBox, QColorDialog, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
 SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
-APP_VERSION="2.3.2"
+APP_VERSION="2.4.0"
 # A GitHub Releases API endpoint will be inserted after the user's publishing
 # repository is connected. pet_data.json can override it with update_api_url.
 UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
@@ -95,7 +95,7 @@ class SettingsWindow(QWidget):
         self.screen=QComboBox();self.screen.addItems(["只在当前显示器","允许跨显示器"]);self.screen.setCurrentIndex(0 if pet.data.get("screen_mode","current")=="current" else 1);self.screen.currentIndexChanged.connect(lambda i:self.set_value("screen_mode","current" if i==0 else "all"));bform.addRow("活动范围",self.screen)
         layout.addWidget(behaviour)
         costume=QGroupBox("装扮");cform=QFormLayout(costume)
-        self.costume_mode=QComboBox();self.costume_mode.addItems(["保持原味","固定装扮","随机轮换"]);self.costume_mode.setCurrentIndex({"none":0,"fixed":1,"random":2}.get(pet.data.get("costume_mode"),0));self.costume_mode.currentIndexChanged.connect(self.costume_mode_changed);cform.addRow("换装方式",self.costume_mode)
+        self.costume_mode=QComboBox();self.costume_mode.addItems(["保持原味","永远保持原始奶蛋","固定装扮","随机轮换"]);self.costume_mode.setCurrentIndex({"none":0,"locked_original":1,"fixed":2,"random":3}.get(pet.data.get("costume_mode"),0));self.costume_mode.currentIndexChanged.connect(self.costume_mode_changed);cform.addRow("换装方式",self.costume_mode)
         self.costume_category=QComboBox();self.costume_category.addItems(list(COSTUME_CATEGORIES));self.costume_category.currentTextChanged.connect(self.costume_category_changed);cform.addRow("装扮类别",self.costume_category)
         self.costume=QComboBox();self.costume.currentTextChanged.connect(self.costume_changed);cform.addRow("当前装扮",self.costume)
         current_key=pet.data.get("costume","none");category=next((c for c,keys in COSTUME_CATEGORIES.items() if current_key in keys),"原始与特殊");self.costume_category.setCurrentText(category);self.costume_category_changed(category);self.costume.setCurrentText(COSTUMES.get(current_key,COSTUMES["none"]))
@@ -118,7 +118,7 @@ class SettingsWindow(QWidget):
     def pick_color(self):
         color=QColorDialog.getColor(QColor(self.pet.data.get("skin_color","#f6c94f")),self,"选择奶蛋肤色")
         if color.isValid():self.pet.data["skin_color"]=color.name();self.pet.set_skin_mode("custom");self.color_mode.setCurrentIndex(1)
-    def costume_mode_changed(self,index):self.pet.set_costume_mode(("none","fixed","random")[index])
+    def costume_mode_changed(self,index):self.pet.set_costume_mode(("none","locked_original","fixed","random")[index])
     def costume_category_changed(self,category):
         current=self.costume.currentText();self.costume.blockSignals(True);self.costume.clear();self.costume.addItems([COSTUMES[k] for k in COSTUME_CATEGORIES.get(category,[])]);self.costume.blockSignals(False)
         if current in [self.costume.itemText(i) for i in range(self.costume.count())]:self.costume.setCurrentText(current)
@@ -173,7 +173,8 @@ class FuzzyPet(QWidget):
         self.base_body_box=self.yellow_body_box(self.frames["idle"])
         for name in COSTUMES:
             if name=="none":continue
-            p=self.frames["angel"] if name=="angel" else QPixmap(str(ASSETS/"costumes"/f"{name}.png"))
+            p=QPixmap(str(ASSETS/"costumes"/f"{name}.png"))
+            if p.isNull() and name=="angel":p=self.frames["angel"]
             if not p.isNull():self.costume_frames[name]=p;self.costume_body_boxes[name]=self.yellow_body_box(p)
         self.tint_cache={};self.current_costume=str(self.data.get("costume","none"));self.next_costume_change=time.monotonic()+10
         self.walking=False; self.paused=bool(self.data.get("quiet")); self.move_dx=random.choice((-2,0,2)); self.move_dy=random.choice((-2,0,2)); self.dragging=False; self.drag_offset=QPoint(); self.press_global=QPoint(); self.press_time=0.0
@@ -202,7 +203,7 @@ class FuzzyPet(QWidget):
         self.data["skin_mode"]=mode;self.tint_cache.clear();self.save_data();self.update()
     def set_costume_mode(self,mode):
         self.data["costume_mode"]=mode
-        if mode=="none":self.set_costume("none",announce=False)
+        if mode in ("none","locked_original"):self.set_costume("none",announce=False)
         elif mode=="random":self.random_costume()
         else:self.set_costume(self.data.get("costume","none"),announce=False)
         self.save_data();self.update()
@@ -334,18 +335,12 @@ class FuzzyPet(QWidget):
             key="roll" if rolling else (self.expression if self.expression in ("heart","angel","rest") else ("step" if self.walking and not self.dragging and int(now*5)%2 else "idle"));source=self.frames[key]
         source=self.colored_frame(key,source);target_w,target_h=self.render_size("idle" if key.startswith("costume_") or key=="rest" else key)
         costume_box=None
-        if key.startswith("costume_"):
-            costume_box=self.costume_body_boxes.get(costume,QRect(0,0,source.width(),source.height()))
-            wanted_body_h=target_h*self.base_body_box.height()/self.frames["idle"].height()
-            scale=wanted_body_h/max(1,costume_box.height())
-            frame=source.scaled(max(1,round(source.width()*scale)),max(1,round(source.height()*scale)),Qt.KeepAspectRatio,Qt.SmoothTransformation)
-        else:frame=source.scaled(target_w,target_h,Qt.KeepAspectRatio,Qt.SmoothTransformation)
+        # The approved 4x3 reference sheets use square cells with deliberate
+        # transparent padding. Scale every costume cell by one shared factor;
+        # never resize individual outfits according to hats, horns or tails.
+        frame=source.scaledToHeight(round(target_h*1.25),Qt.SmoothTransformation) if key.startswith("costume_") else source.scaled(target_w,target_h,Qt.KeepAspectRatio,Qt.SmoothTransformation)
         if not rolling: frame=frame.scaledToHeight(round(frame.height()*(1 if self.dragging else 1+.009*math.sin(now*2.8))),Qt.SmoothTransformation)
         x=(self.width()-frame.width())//2; y=self.height()-frame.height()-4
-        if costume_box is not None:
-            sx=frame.width()/source.width();sy=frame.height()/source.height();base_y=self.height()-target_h-4
-            target_cx=self.width()/2;source_cx=(costume_box.left()+costume_box.width()/2)*sx
-            x=round(target_cx-source_cx);target_bottom=base_y+self.base_body_box.bottom()*target_h/self.frames["idle"].height();y=round(target_bottom-costume_box.bottom()*sy)
         hop=now-self.hop_started
         if 0<=hop<.55: y-=round(28*math.sin(math.pi*hop/.55))
         if rolling:
@@ -619,7 +614,8 @@ class FuzzyPet(QWidget):
         self.walking=False;self.rolling_until=0.;self.roll_speed=0.;self.roll_spin_speed=0.;self.roll_angle=0.;self.hop_started=0.;self.expression="normal";self.expression_until=0.;self.bubble="";self.bubble_until=0.;self.update()
     def random_click_interaction(self):
         choice=random.random()
-        if choice<.38:self.set_expression(random.choice(("heart","happy","shy","shock","cool","eat")))
+        lock_original=self.data.get("costume_mode")=="locked_original"
+        if choice<.38 or lock_original:self.set_expression(random.choice(("heart","happy","shy","shock","cool","eat")))
         elif choice<.76:
             self.data["costume_mode"]="fixed";self.random_costume()
         elif choice<.9:
@@ -633,6 +629,7 @@ class FuzzyPet(QWidget):
         for label,name in (("开心","happy"),("生气","angry"),("哭泣","cry"),("震惊","shock"),("害羞","shy"),("酷酷墨镜","cool"),("吃饼干","eat"),("睡觉","sleep"),("抱枕休息","rest"),("爱心","heart")): callbacks[expr.addAction(label)]=lambda n=name:self.set_expression(n)
         dress=menu.addMenu("👗 装扮")
         callbacks[dress.addAction("原味奶蛋（不换装）")]=lambda:self.set_costume_mode("none")
+        callbacks[dress.addAction("锁定原始奶蛋（点击也不换装）")]=lambda:self.set_costume_mode("locked_original")
         callbacks[dress.addAction("随机换装")]=lambda:self.set_costume_mode("random")
         dress.addSeparator()
         for category,keys in COSTUME_CATEGORIES.items():
