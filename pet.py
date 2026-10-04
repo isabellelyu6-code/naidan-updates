@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, 
 from PySide6.QtWidgets import QApplication, QCheckBox, QColorDialog, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
 SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
-APP_VERSION="2.3.1"
+APP_VERSION="2.3.2"
 # A GitHub Releases API endpoint will be inserted after the user's publishing
 # repository is connected. pet_data.json can override it with update_api_url.
 UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
@@ -169,10 +169,12 @@ class FuzzyPet(QWidget):
             if p.isNull(): raise FileNotFoundError(ASSETS/f"{name}.png")
             self.frames[name]=p
         self.costume_frames={}
+        self.costume_body_boxes={}
+        self.base_body_box=self.yellow_body_box(self.frames["idle"])
         for name in COSTUMES:
             if name=="none":continue
             p=self.frames["angel"] if name=="angel" else QPixmap(str(ASSETS/"costumes"/f"{name}.png"))
-            if not p.isNull():self.costume_frames[name]=p
+            if not p.isNull():self.costume_frames[name]=p;self.costume_body_boxes[name]=self.yellow_body_box(p)
         self.tint_cache={};self.current_costume=str(self.data.get("costume","none"));self.next_costume_change=time.monotonic()+10
         self.walking=False; self.paused=bool(self.data.get("quiet")); self.move_dx=random.choice((-2,0,2)); self.move_dy=random.choice((-2,0,2)); self.dragging=False; self.drag_offset=QPoint(); self.press_global=QPoint(); self.press_time=0.0
         self.tiny_mode=False; self.normal_pos=QPoint()
@@ -234,6 +236,14 @@ class FuzzyPet(QWidget):
         result=QPixmap.fromImage(image)
         self.tint_cache[cache_key]=result
         return result
+    def yellow_body_box(self,pixmap):
+        image=pixmap.toImage().convertToFormat(QImage.Format_RGBA8888)
+        raw=np.frombuffer(image.bits(),dtype=np.uint8).reshape(image.height(),image.bytesPerLine())[:,:image.width()*4].reshape(image.height(),image.width(),4)
+        r=raw[:,:,0].astype(np.int16);g=raw[:,:,1].astype(np.int16);b=raw[:,:,2].astype(np.int16);a=raw[:,:,3]
+        mask=(a>30)&(r>145)&(g>90)&(b<180)&((r-b)>30)&((g-b)>8)
+        ys,xs=np.where(mask)
+        if not len(xs):return QRect(0,0,pixmap.width(),pixmap.height())
+        return QRect(int(xs.min()),int(ys.min()),int(xs.max()-xs.min()+1),int(ys.max()-ys.min()+1))
     def available_voices(self):
         if os.name!="nt":return []
         command='[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices() | ForEach-Object {$_.VoiceInfo.Name}'
@@ -279,6 +289,8 @@ class FuzzyPet(QWidget):
         self.setFixedSize(max(330,w+50),max(350,h+105)); self.move(old_center-self.width()//2,old_bottom-self.height())
     def tick(self):
         now=time.monotonic(); wall=time.time(); timers_changed=False
+        if self.rolling_until and now>=self.rolling_until:
+            self.rolling_until=0.;self.roll_speed=0.;self.roll_spin_speed=0.;self.roll_angle=0.
         for deadline,message in self.timers[:]:
             if wall>=deadline:
                 self.timers.remove((deadline,message)); timers_changed=True; QApplication.beep(); QTimer.singleShot(350,QApplication.beep); QTimer.singleShot(700,QApplication.beep); self.say(message,"happy",8); QMessageBox.information(None,"奶蛋提醒你",message)
@@ -321,11 +333,20 @@ class FuzzyPet(QWidget):
         else:
             key="roll" if rolling else (self.expression if self.expression in ("heart","angel","rest") else ("step" if self.walking and not self.dragging and int(now*5)%2 else "idle"));source=self.frames[key]
         source=self.colored_frame(key,source);target_w,target_h=self.render_size("idle" if key.startswith("costume_") or key=="rest" else key)
-        # Keep every outfit's native proportions. The old IgnoreAspectRatio
-        # scaling was what made square costume art look visibly squashed.
-        frame=source.scaledToHeight(target_h,Qt.SmoothTransformation) if key.startswith("costume_") else source.scaled(target_w,target_h,Qt.KeepAspectRatio,Qt.SmoothTransformation)
+        costume_box=None
+        if key.startswith("costume_"):
+            costume_box=self.costume_body_boxes.get(costume,QRect(0,0,source.width(),source.height()))
+            wanted_body_h=target_h*self.base_body_box.height()/self.frames["idle"].height()
+            scale=wanted_body_h/max(1,costume_box.height())
+            frame=source.scaled(max(1,round(source.width()*scale)),max(1,round(source.height()*scale)),Qt.KeepAspectRatio,Qt.SmoothTransformation)
+        else:frame=source.scaled(target_w,target_h,Qt.KeepAspectRatio,Qt.SmoothTransformation)
         if not rolling: frame=frame.scaledToHeight(round(frame.height()*(1 if self.dragging else 1+.009*math.sin(now*2.8))),Qt.SmoothTransformation)
-        x=(self.width()-frame.width())//2; y=self.height()-frame.height()-4; hop=now-self.hop_started
+        x=(self.width()-frame.width())//2; y=self.height()-frame.height()-4
+        if costume_box is not None:
+            sx=frame.width()/source.width();sy=frame.height()/source.height();base_y=self.height()-target_h-4
+            target_cx=self.width()/2;source_cx=(costume_box.left()+costume_box.width()/2)*sx
+            x=round(target_cx-source_cx);target_bottom=base_y+self.base_body_box.bottom()*target_h/self.frames["idle"].height();y=round(target_bottom-costume_box.bottom()*sy)
+        hop=now-self.hop_started
         if 0<=hop<.55: y-=round(28*math.sin(math.pi*hop/.55))
         if rolling:
             # Rotate around one fixed centre. The sprite and its bounding box no
@@ -588,8 +609,14 @@ class FuzzyPet(QWidget):
         if e.button()!=Qt.LeftButton:return
         if self.dragging:
             self.dragging=False;self.walking=False;self.rolling_until=0.;self.roll_speed=0.;self.next_decision=time.monotonic()+8;self.last_interaction=time.monotonic()
-        elif time.monotonic()-self.press_time<1:self.random_click_interaction()
+        elif time.monotonic()-self.press_time<1:
+            if self.action_active():self.stop_current_action()
+            else:self.random_click_interaction()
         e.accept()
+    def action_active(self):
+        return self.walking or time.monotonic()<self.rolling_until or self.expression!="normal" or 0<=time.monotonic()-self.hop_started<.55
+    def stop_current_action(self):
+        self.walking=False;self.rolling_until=0.;self.roll_speed=0.;self.roll_spin_speed=0.;self.roll_angle=0.;self.hop_started=0.;self.expression="normal";self.expression_until=0.;self.bubble="";self.bubble_until=0.;self.update()
     def random_click_interaction(self):
         choice=random.random()
         if choice<.38:self.set_expression(random.choice(("heart","happy","shy","shock","cool","eat")))
@@ -603,7 +630,7 @@ class FuzzyPet(QWidget):
         act=menu.addMenu("🎭 动作")
         for label,fn in (("滚一圈",lambda:self.start_roll(8,2.6)),("高速滚走",lambda:self.start_roll(random.choice((-15,15)),3.4)),("原地翻滚",lambda:self.start_roll(.01,1.3)),("跳一下",lambda:setattr(self,"hop_started",time.monotonic()))):callbacks[act.addAction(label)]=fn
         expr=menu.addMenu("😊 表情")
-        for label,name in (("开心","happy"),("生气","angry"),("哭泣","cry"),("震惊","shock"),("害羞","shy"),("酷酷墨镜","cool"),("吃饼干","eat"),("睡觉","sleep"),("抱枕休息","rest"),("爱心","heart"),("天使","angel")): callbacks[expr.addAction(label)]=lambda n=name:self.set_expression(n)
+        for label,name in (("开心","happy"),("生气","angry"),("哭泣","cry"),("震惊","shock"),("害羞","shy"),("酷酷墨镜","cool"),("吃饼干","eat"),("睡觉","sleep"),("抱枕休息","rest"),("爱心","heart")): callbacks[expr.addAction(label)]=lambda n=name:self.set_expression(n)
         dress=menu.addMenu("👗 装扮")
         callbacks[dress.addAction("原味奶蛋（不换装）")]=lambda:self.set_costume_mode("none")
         callbacks[dress.addAction("随机换装")]=lambda:self.set_costume_mode("random")
