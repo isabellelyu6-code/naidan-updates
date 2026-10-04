@@ -3,20 +3,38 @@ from __future__ import annotations
 import json, math, os, random, shutil, subprocess, sys, tempfile, threading, time, urllib.parse, urllib.request, webbrowser
 from datetime import datetime
 from pathlib import Path
+import numpy as np
 from PySide6.QtCore import QObject, QPoint, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QTransform
-from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, QPen, QPixmap, QTransform
+from PySide6.QtWidgets import QApplication, QCheckBox, QColorDialog, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
 SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
-APP_VERSION="2.2.0"
+APP_VERSION="2.3.0"
 # A GitHub Releases API endpoint will be inserted after the user's publishing
 # repository is connected. pet_data.json can override it with update_api_url.
 UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
 if getattr(sys,"frozen",False):
     DATA_DIR=Path(os.environ.get("APPDATA",Path.home()))/"奶蛋"; DATA_DIR.mkdir(parents=True,exist_ok=True); DATA=DATA_DIR/"pet_data.json"
 else: DATA=SCRIPT_ROOT/"pet_data.json"
-DEFAULT={"city":"London","quiet":False,"speak":False,"voice":"","voice_rate":0,"notes":[],"pet_scale":70,"width_scale":100,"height_scale":100,"opacity":100,"layer_mode":"top","position_locked":False,"click_through":False,"chatter":"low","screen_mode":"current","settings_v2_2":True,"saved_timers":[],"stopwatch_started":None,"auto_update":True,"update_api_url":"","links":{"ChatGPT":"https://chatgpt.com/","小红书":"https://www.xiaohongshu.com/","Portico":"https://evision.ucl.ac.uk/urd/sits.urd/run/siw_lgn","Gmail":"https://mail.google.com/mail/u/0/?tab=rm&ogbl#inbox","timetable":"https://timetable.ucl.ac.uk/my-timetable"}}
+DEFAULT={"city":"London","quiet":False,"speak":False,"voice":"","voice_rate":0,"voice_language":"zh","notes":[],"pet_scale":70,"width_scale":100,"height_scale":100,"opacity":100,"layer_mode":"top","position_locked":False,"click_through":False,"chatter":"low","screen_mode":"current","settings_v2_2":True,"saved_timers":[],"stopwatch_started":None,"auto_update":True,"update_api_url":"","skin_mode":"default","skin_color":"#f6c94f","costume_mode":"none","costume":"none","costume_interval":300,"links":{"ChatGPT":"https://chatgpt.com/","小红书":"https://www.xiaohongshu.com/","Portico":"https://evision.ucl.ac.uk/urd/sits.urd/run/siw_lgn","Gmail":"https://mail.google.com/mail/u/0/?tab=rm&ogbl#inbox","timetable":"https://timetable.ucl.ac.uk/my-timetable","GO":"https://ucl.ombiel.co.uk/campusm/home#menu","Moodle":"https://moodle.ucl.ac.uk/my/"}}
 LEGACY_LINKS={"Imperial Blackboard","My Imperial","Imperial Outlook","YouTube","Spotify","Portical"}
+
+COSTUMES={
+    "none":"原味奶蛋","demon":"恶魔奶蛋",
+    "aries":"白羊座","taurus":"金牛座","gemini":"双子座","cancer":"巨蟹座","leo":"狮子座","virgo":"处女座","libra":"天秤座","scorpio":"天蝎座","sagittarius":"射手座","capricorn":"摩羯座","aquarius":"水瓶座","pisces":"双鱼座",
+    "rat":"生肖鼠","ox":"生肖牛","tiger":"生肖虎","rabbit":"生肖兔","dragon":"生肖龙","snake":"生肖蛇","horse":"生肖马","goat":"生肖羊","monkey":"生肖猴","rooster":"生肖鸡","dog":"生肖狗","pig":"生肖猪",
+}
+COSTUME_LINES={
+    "none":["今天不换衣服，我就是最经典的原味奶蛋！","原味奶蛋也超级可爱呀。"],
+    "demon":["我是恶魔奶蛋，正在策划一个可爱的坏主意！","小恶魔登场，不许被我萌到哦。"],
+    "aries":["我是白羊座奶蛋，今天也要勇敢向前冲！"],"taurus":["我是金牛座奶蛋，稳稳地陪着你。"],"gemini":["我是双子座奶蛋，猜猜现在是哪一个我？"],"cancer":["我是巨蟹座奶蛋，把温柔都留给你。"],"leo":["我是狮子座奶蛋，今天也闪闪发光！"],"virgo":["我是处女座奶蛋，把今天整理得漂漂亮亮。"],"libra":["我是天秤座奶蛋，可爱当然要刚刚好。"],"scorpio":["我是天蝎座奶蛋，神秘一下也很可爱。"],"sagittarius":["我是射手座奶蛋，向快乐出发！"],"capricorn":["我是摩羯座奶蛋，认真陪你完成今天。"],"aquarius":["我是水瓶座奶蛋，给你倒一杯好心情。"],"pisces":["我是双鱼座奶蛋，送你一颗软绵绵的梦。"],
+    "rat":["我是生肖鼠奶蛋，机灵的小好运来啦！"],"ox":["我是生肖牛奶蛋，今天也稳稳加油。"],"tiger":["我是生肖虎奶蛋，嗷呜——但一点也不凶。"],"rabbit":["我是生肖兔奶蛋，送你一根好运胡萝卜！"],"dragon":["我是生肖龙奶蛋，今天一定龙运当头！"],"snake":["我是生肖蛇奶蛋，悄悄把好运绕给你。"],"horse":["我是生肖马奶蛋，马上就有好事发生！"],"goat":["我是生肖羊奶蛋，软绵绵地陪你。"],"monkey":["我是生肖猴奶蛋，今天也要机灵又开心。"],"rooster":["我是生肖鸡奶蛋，咕咕咕，起床啦！"],"dog":["我是生肖狗奶蛋，会一直忠实地陪着你。"],"pig":["我是生肖猪奶蛋，圆滚滚的福气来啦！"],
+}
+JAPANESE_LINES={
+    "今天也要照顾好自己呀。":"今日も自分を大切にしてね。","你现在在忙什么呢？":"今、何をしているの？","要记得喝水哦。":"お水を飲むのを忘れないでね。","累了就休息一下吧。":"疲れたら少し休もうね。","奶蛋在这里陪你。":"ナイダンはここでそばにいるよ。",
+    "今天也辛苦啦，摸摸你。":"今日もお疲れさま。よしよし。","我偷偷给你存了一点好运。":"君のために幸運を少し貯めておいたよ。","先伸个懒腰，再继续努力吧。":"ちょっと伸びをしてから、また頑張ろう。","奶蛋刚刚是不是又可爱了一点？":"ナイダン、さっきよりもっと可愛くなったかな？","别担心，慢慢来就好。":"心配しないで、ゆっくりでいいよ。","完成一件事就很了不起啦！":"一つできただけでもすごいよ！","给你一个软乎乎的抱抱。":"ふわふわのハグをあげるね。",
+    "换装完成！请欣赏全新的奶蛋！":"お着替え完了！新しいナイダンを見てね。","不许眨眼，我又变得更可爱啦。":"まばたきしないで、もっと可愛くなったよ。","你好呀，我是奶蛋。":"こんにちは、ナイダンだよ。",
+}
 
 def load_data():
     data=json.loads(json.dumps(DEFAULT))
@@ -61,6 +79,7 @@ class SettingsWindow(QWidget):
             row=QHBoxLayout(); slider=QSlider(Qt.Horizontal); slider.setRange(low,high); slider.setValue(int(pet.data.get(key,70 if key=="pet_scale" else 100))); value=QLabel(f"{slider.value()}%"); value.setFixedWidth(45)
             slider.valueChanged.connect(lambda v,k=key,l=value:self.slider_changed(k,v,l)); row.addWidget(slider);row.addWidget(value);form.addRow(text,row);self.sliders[key]=slider
         self.layer=QComboBox();self.layer.addItems(["始终置顶","普通窗口层级","置于其他窗口下方"]);self.layer.setCurrentIndex({"top":0,"normal":1,"bottom":2}.get(pet.data.get("layer_mode"),0));self.layer.currentIndexChanged.connect(self.layer_changed);form.addRow("奶蛋图层",self.layer)
+        color_row=QHBoxLayout();self.color_mode=QComboBox();self.color_mode.addItems(["默认黄色","自选肤色","彩虹平滑轮换"]);self.color_mode.setCurrentIndex({"default":0,"custom":1,"rainbow":2}.get(pet.data.get("skin_mode"),0));self.color_mode.currentIndexChanged.connect(self.color_mode_changed);pick=QPushButton("选择颜色…");pick.clicked.connect(self.pick_color);color_row.addWidget(self.color_mode);color_row.addWidget(pick);form.addRow("身体颜色",color_row)
         layout.addWidget(appearance)
         behaviour=QGroupBox("活动方式"); bform=QFormLayout(behaviour)
         self.quiet=QCheckBox("固定在原地，但仍会做表情和说话");self.quiet.setChecked(bool(pet.data.get("quiet")));self.quiet.toggled.connect(pet.set_quiet);bform.addRow("安静奶蛋",self.quiet)
@@ -69,9 +88,14 @@ class SettingsWindow(QWidget):
         self.chatter=QComboBox();self.chatter.addItems(["关闭","低","中","高"]);self.chatter.setCurrentIndex({"off":0,"low":1,"medium":2,"high":3}.get(pet.data.get("chatter"),1));self.chatter.currentIndexChanged.connect(self.chatter_changed);bform.addRow("主动说话频率",self.chatter)
         self.screen=QComboBox();self.screen.addItems(["只在当前显示器","允许跨显示器"]);self.screen.setCurrentIndex(0 if pet.data.get("screen_mode","current")=="current" else 1);self.screen.currentIndexChanged.connect(lambda i:self.set_value("screen_mode","current" if i==0 else "all"));bform.addRow("活动范围",self.screen)
         layout.addWidget(behaviour)
+        costume=QGroupBox("装扮");cform=QFormLayout(costume)
+        self.costume_mode=QComboBox();self.costume_mode.addItems(["保持原味","固定装扮","随机轮换"]);self.costume_mode.setCurrentIndex({"none":0,"fixed":1,"random":2}.get(pet.data.get("costume_mode"),0));self.costume_mode.currentIndexChanged.connect(self.costume_mode_changed);cform.addRow("换装方式",self.costume_mode)
+        self.costume=QComboBox();self.costume.addItems(list(COSTUMES.values()));current=COSTUMES.get(pet.data.get("costume","none"),COSTUMES["none"]);self.costume.setCurrentText(current);self.costume.currentTextChanged.connect(self.costume_changed);cform.addRow("当前装扮",self.costume)
+        layout.addWidget(costume)
         voice=QGroupBox("语音");vform=QFormLayout(voice)
         self.speech=QCheckBox("开启语音播报");self.speech.setChecked(bool(pet.data.get("speak")));self.speech.toggled.connect(lambda v:self.set_value("speak",v));vform.addRow(self.speech)
         self.voice=QComboBox(); voices=pet.available_voices();self.voice.addItems(["系统默认"]+voices);saved=pet.data.get("voice","");self.voice.setCurrentText(saved if saved in voices else "系统默认");self.voice.currentTextChanged.connect(lambda v:self.set_value("voice","" if v=="系统默认" else v));vform.addRow("声音",self.voice)
+        self.voice_language=QComboBox();self.voice_language.addItems(["中文","日语（气泡仍为中文）"]);self.voice_language.setCurrentIndex(1 if pet.data.get("voice_language")=="ja" else 0);self.voice_language.currentIndexChanged.connect(lambda i:self.set_value("voice_language","ja" if i else "zh"));vform.addRow("播报语言",self.voice_language)
         self.rate=QSpinBox();self.rate.setRange(-5,5);self.rate.setValue(int(pet.data.get("voice_rate",0)));self.rate.valueChanged.connect(lambda v:self.set_value("voice_rate",v));vform.addRow("语速",self.rate)
         preview=QPushButton("试听声音");preview.clicked.connect(lambda:pet.speak_text("你好呀，我是奶蛋。"));vform.addRow(preview);layout.addWidget(voice)
         row=QHBoxLayout();reset=QPushButton("恢复默认外观");reset.clicked.connect(self.reset_appearance);close=QPushButton("完成");close.clicked.connect(self.close);row.addWidget(reset);row.addStretch();row.addWidget(close);layout.addLayout(row)
@@ -82,6 +106,13 @@ class SettingsWindow(QWidget):
         else:self.pet.update_window_size();self.pet.update()
         self.pet.save_data()
     def layer_changed(self,index):self.pet.set_layer_mode(("top","normal","bottom")[index])
+    def color_mode_changed(self,index):self.pet.set_skin_mode(("default","custom","rainbow")[index])
+    def pick_color(self):
+        color=QColorDialog.getColor(QColor(self.pet.data.get("skin_color","#f6c94f")),self,"选择奶蛋肤色")
+        if color.isValid():self.pet.data["skin_color"]=color.name();self.pet.set_skin_mode("custom");self.color_mode.setCurrentIndex(1)
+    def costume_mode_changed(self,index):self.pet.set_costume_mode(("none","fixed","random")[index])
+    def costume_changed(self,label):
+        key=next((k for k,v in COSTUMES.items() if v==label),"none");self.pet.set_costume(key,announce=False)
     def chatter_changed(self,index):self.pet.data["chatter"]=("off","low","medium","high")[index];self.pet.schedule_chatter();self.pet.save_data()
     def reset_appearance(self):
         self.sliders["pet_scale"].setValue(70);self.sliders["width_scale"].setValue(100);self.sliders["height_scale"].setValue(100);self.sliders["opacity"].setValue(100);self.layer.setCurrentIndex(0)
@@ -122,10 +153,16 @@ class FuzzyPet(QWidget):
         super().__init__(); self.data=load_data(); self.setWindowTitle("奶蛋桌面助手 v2")
         self.setWindowFlags(Qt.Window|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint); self.setAttribute(Qt.WA_TranslucentBackground); self.setWindowIcon(QIcon(str(ASSETS/"奶蛋.ico"))); self.setFixedSize(330,350)
         self.frames={}
-        for name in ("idle","step","heart","angel","roll"):
+        for name in ("idle","step","heart","angel","roll","rest"):
             p=QPixmap(str(ASSETS/f"{name}.png"))
             if p.isNull(): raise FileNotFoundError(ASSETS/f"{name}.png")
             self.frames[name]=p
+        self.costume_frames={}
+        for name in COSTUMES:
+            if name=="none":continue
+            p=QPixmap(str(ASSETS/"costumes"/f"{name}.png"))
+            if not p.isNull():self.costume_frames[name]=p
+        self.tint_cache={};self.current_costume=str(self.data.get("costume","none"));self.next_costume_change=time.monotonic()+10
         self.walking=False; self.paused=bool(self.data.get("quiet")); self.move_dx=random.choice((-2,0,2)); self.move_dy=random.choice((-2,0,2)); self.dragging=False; self.drag_offset=QPoint(); self.press_global=QPoint(); self.press_time=0.0
         self.tiny_mode=False; self.normal_pos=QPoint()
         self.last_interaction=time.monotonic(); self.next_decision=time.monotonic()+2; self.next_chatter=time.monotonic()+60; self.expression="normal"; self.expression_until=0.; self.hop_started=0.; self.roll_speed=0.; self.roll_angle=0.; self.roll_spin_speed=0.; self.rolling_until=0.; self.bubble=""; self.bubble_until=0.
@@ -148,6 +185,44 @@ class FuzzyPet(QWidget):
         except OSError: pass
     def schedule_chatter(self):
         ranges={"off":(86400,86400),"low":(180,360),"medium":(90,180),"high":(35,80)};lo,hi=ranges.get(self.data.get("chatter","low"),(180,360));self.next_chatter=time.monotonic()+random.uniform(lo,hi)
+    def set_skin_mode(self,mode):
+        self.data["skin_mode"]=mode;self.tint_cache.clear();self.save_data();self.update()
+    def set_costume_mode(self,mode):
+        self.data["costume_mode"]=mode
+        if mode=="none":self.set_costume("none",announce=False)
+        elif mode=="random":self.random_costume()
+        else:self.set_costume(self.data.get("costume","none"),announce=False)
+        self.save_data();self.update()
+    def set_costume(self,name,announce=True):
+        if name not in COSTUMES:name="none"
+        self.current_costume=name;self.data["costume"]=name;self.save_data();self.next_costume_change=time.monotonic()+max(60,int(self.data.get("costume_interval",300)))
+        if announce:
+            line=random.choice(COSTUME_LINES.get(name,[f"我是{COSTUMES[name]}！"]));self.say(line,"happy",6,speech_text=self.japanese_costume_line(name,line))
+        self.update()
+    def random_costume(self):
+        choices=list(COSTUMES);choices.remove(self.current_costume if self.current_costume in choices else "none")
+        self.set_costume(random.choice(choices),announce=True)
+    def japanese_costume_line(self,name,fallback):
+        if self.data.get("voice_language")!="ja":return fallback
+        label=COSTUMES.get(name,"ナイダン");translations={"none":"いつものナイダンだよ。","demon":"小悪魔ナイダンだよ。かわいいいたずらを考え中！"}
+        return translations.get(name,f"今は{label}のナイダンだよ。")
+    def colored_frame(self,key,source):
+        mode=self.data.get("skin_mode","default")
+        if mode=="default":return source
+        if mode=="rainbow":target=QColor.fromHsv(int((time.monotonic()*24)%360),185,245)
+        else:target=QColor(self.data.get("skin_color","#f6c94f"))
+        cache_key=(key,target.hue()//12,target.saturation()//16,target.value()//16)
+        if cache_key in self.tint_cache:return self.tint_cache[cache_key]
+        image=source.toImage().convertToFormat(QImage.Format_RGBA8888)
+        raw=np.frombuffer(image.bits(),dtype=np.uint8).reshape(image.height(),image.bytesPerLine())[:,:image.width()*4].reshape(image.height(),image.width(),4)
+        r=raw[:,:,0].astype(np.int16);g=raw[:,:,1].astype(np.int16);b=raw[:,:,2].astype(np.int16);a=raw[:,:,3]
+        mask=(a>10)&(r>145)&(g>95)&(b<175)&(r*100>g*102)&(g*100>b*112)&((r-g)<105)
+        shade=np.clip(np.maximum(np.maximum(r,g),b)/220.0,.42,1.25)
+        for channel,value in enumerate((target.red(),target.green(),target.blue())):
+            layer=np.clip(value*shade,0,255).astype(np.uint8);raw[:,:,channel][mask]=layer[mask]
+        result=QPixmap.fromImage(image)
+        self.tint_cache[cache_key]=result
+        return result
     def available_voices(self):
         if os.name!="nt":return []
         command='[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices() | ForEach-Object {$_.VoiceInfo.Name}'
@@ -198,8 +273,9 @@ class FuzzyPet(QWidget):
                 self.timers.remove((deadline,message)); timers_changed=True; QApplication.beep(); QTimer.singleShot(350,QApplication.beep); QTimer.singleShot(700,QApplication.beep); self.say(message,"happy",8); QMessageBox.information(None,"奶蛋提醒你",message)
         if timers_changed:self.save_timer_state()
         if now>=self.next_chatter and self.data.get("chatter","low")!="off":
-            lines=[("今天也要照顾好自己呀。","happy"),("你现在在忙什么呢？","shock"),("要记得喝水哦。","happy"),("累了就休息一下吧。","shy"),("奶蛋在这里陪你。","heart")]
+            lines=[("今天也要照顾好自己呀。","happy"),("你现在在忙什么呢？","shock"),("要记得喝水哦。","happy"),("累了就休息一下吧。","shy"),("奶蛋在这里陪你。","heart"),("今天也辛苦啦，摸摸你。","heart"),("我偷偷给你存了一点好运。","shy"),("先伸个懒腰，再继续努力吧。","happy"),("奶蛋刚刚是不是又可爱了一点？","shy"),("别担心，慢慢来就好。","happy"),("完成一件事就很了不起啦！","happy"),("给你一个软乎乎的抱抱。","heart")]
             text,face=random.choice(lines);self.say(text,face,5);self.schedule_chatter()
+        if self.data.get("costume_mode")=="random" and now>=self.next_costume_change:self.random_costume()
         if now>=self.expression_until and self.expression!="sleep": self.expression="normal"
         if now>=self.bubble_until: self.bubble=""
         if not self.paused and not self.dragging and now<self.rolling_until:
@@ -207,7 +283,7 @@ class FuzzyPet(QWidget):
             if x<=b.left() or x>=b.right()-self.width()+1: self.roll_speed*=-.92; x=max(b.left(),min(x,b.right()-self.width()+1))
             self.move(x,self.y()); self.roll_angle+=self.roll_spin_speed; self.roll_speed*=.995
         elif not self.paused and not self.dragging:
-            if now-self.last_interaction>180: self.walking=False; self.expression="sleep"
+            if now-self.last_interaction>180: self.walking=False; self.expression="rest"
             elif now>=self.next_decision:
                 self.expression="normal"
                 if random.random()<.08: self.start_roll(random.choice((-7.,7.)),2.2)
@@ -228,8 +304,12 @@ class FuzzyPet(QWidget):
             frame=self.frames["roll"].scaled(64,64,Qt.KeepAspectRatio,Qt.SmoothTransformation)
             p.drawPixmap((self.width()-frame.width())//2,(self.height()-frame.height())//2,frame); return
         rolling=now<self.rolling_until
-        key="roll" if rolling else (self.expression if self.expression in ("heart","angel") else ("step" if self.walking and not self.dragging and int(now*5)%2 else "idle"))
-        target_w,target_h=self.render_size(key); frame=self.frames[key].scaled(target_w,target_h,Qt.IgnoreAspectRatio,Qt.SmoothTransformation)
+        costume=self.current_costume if self.data.get("costume_mode")!="none" else "none"
+        if not rolling and costume in self.costume_frames and self.expression not in ("heart","angel","rest"):
+            key="costume_"+costume;source=self.costume_frames[costume]
+        else:
+            key="roll" if rolling else (self.expression if self.expression in ("heart","angel","rest") else ("step" if self.walking and not self.dragging and int(now*5)%2 else "idle"));source=self.frames[key]
+        source=self.colored_frame(key,source);target_w,target_h=self.render_size("idle" if key.startswith("costume_") or key=="rest" else key); frame=source.scaled(target_w,target_h,Qt.IgnoreAspectRatio,Qt.SmoothTransformation)
         if not rolling: frame=frame.scaledToHeight(round(frame.height()*(1 if self.dragging else 1+.009*math.sin(now*2.8))),Qt.SmoothTransformation)
         x=(self.width()-frame.width())//2; y=self.height()-frame.height()-4; hop=now-self.hop_started
         if 0<=hop<.55: y-=round(28*math.sin(math.pi*hop/.55))
@@ -240,7 +320,7 @@ class FuzzyPet(QWidget):
             p.save(); p.translate(cx,cy); p.rotate(self.roll_angle)
             p.drawPixmap(round(-frame.width()/2),round(-frame.height()/2),frame); p.restore()
         else: p.drawPixmap(x,y,frame)
-        if self.expression not in ("normal","heart","angel") and now>=self.rolling_until:
+        if self.expression not in ("normal","heart","angel","rest") and now>=self.rolling_until:
             p.setFont(QFont("Segoe UI Emoji",28)); p.drawText(QRectF(115,205,110,60),Qt.AlignCenter,{"happy":"✨","angry":"💢","cry":"💧","shock":"❗","shy":"💕","cool":"😎","eat":"🍪","sleep":"💤"}.get(self.expression,""))
         display_text=self.bubble or self.active_timer_text(multiline=False)
         if display_text:
@@ -249,14 +329,14 @@ class FuzzyPet(QWidget):
             bubble_w=min(280,max(24,measured.width()+18)); bubble_h=max(24,measured.height()+10)
             bubble_y=max(4,y-bubble_h-5); r=QRectF((self.width()-bubble_w)/2,bubble_y,bubble_w,bubble_h)
             p.setBrush(QColor(255,255,255,238)); p.setPen(QPen(QColor(240,180,55),2)); p.drawRoundedRect(r,10,10); p.setPen(QColor(55,45,35)); p.setFont(font); p.drawText(r.adjusted(8,5,-8,-5),Qt.AlignCenter|Qt.TextWordWrap,display_text)
-    def say(self,text,expression="happy",seconds=4):
+    def say(self,text,expression="happy",seconds=4,speech_text=None):
         self.bubble=text; self.bubble_until=time.monotonic()+seconds; self.expression=expression; self.expression_until=time.monotonic()+seconds; self.walking=False; self.last_interaction=time.monotonic()
-        if self.data.get("speak"):self.speak_text(text)
+        if self.data.get("speak"):self.speak_text(speech_text or (JAPANESE_LINES.get(text,text) if self.data.get("voice_language")=="ja" else text))
         self.update()
     def start_roll(self,speed=9,seconds=2.6):
         self.walking=False; self.roll_speed=speed; self.roll_spin_speed=(14.0 if abs(speed)<1 else speed*2.4); self.rolling_until=time.monotonic()+seconds; self.last_interaction=time.monotonic()
     def set_expression(self,name):
-        text={"happy":"耶！","angry":"哼！再点我就生气啦","cry":"呜呜……","shock":"欸？！","shy":"嘿嘿……","cool":"今天也很酷。","eat":"嚼嚼嚼……","sleep":"晚安啦 Zzz","heart":"送你一颗心！","angel":"今天是天使蛋。"}.get(name,"你好呀"); self.say(text,name,3); self.hop_started=time.monotonic()
+        text={"happy":"耶！","angry":"哼！再点我就生气啦","cry":"呜呜……","shock":"欸？！","shy":"嘿嘿……","cool":"今天也很酷。","eat":"嚼嚼嚼……","sleep":"晚安啦 Zzz","rest":"抱着枕头休息一下吧。","heart":"送你一颗心！","angel":"今天是天使蛋。"}.get(name,"你好呀"); self.say(text,name,5 if name=="rest" else 3); self.hop_started=time.monotonic()
     def weather(self): self.say("正在看看窗外……","shock",10); QTimer.singleShot(20,self.fetch_weather)
     def fetch_weather(self):
         try:
@@ -314,6 +394,23 @@ class FuzzyPet(QWidget):
     def launch_app(self,protocol,fallback):
         try: os.startfile(protocol)
         except OSError: webbrowser.open(fallback); self.say("没有找到桌面应用，已打开网页版。","shock",5)
+    def launch_shortcut_or_url(self,name,url):
+        if os.name=="nt":
+            roots=[]
+            for base in (os.environ.get("USERPROFILE"),os.environ.get("PUBLIC")):
+                if base:roots.append(Path(base)/"Desktop")
+            if os.environ.get("APPDATA"):roots.append(Path(os.environ["APPDATA"])/"Microsoft"/"Windows"/"Start Menu"/"Programs")
+            if os.environ.get("PROGRAMDATA"):roots.append(Path(os.environ["PROGRAMDATA"])/"Microsoft"/"Windows"/"Start Menu"/"Programs")
+            aliases={"GO":("ucl go","uclgo","go"),"Moodle":("moodle",)}.get(name,(name.lower(),))
+            candidates=[]
+            for root in roots:
+                if not root.exists():continue
+                try:candidates.extend(p for p in root.rglob("*.lnk") if any(a in p.stem.lower() for a in aliases))
+                except OSError:pass
+            if candidates:
+                try:os.startfile(str(sorted(candidates,key=lambda p:len(p.name))[0]));self.say(f"正在打开桌面上的 {name}。","happy",4);return
+                except OSError:pass
+        webbrowser.open(url);self.say(f"没有找到桌面版 {name}，已打开网页版。","shock",5)
     def screenshots_folder(self):
         candidates=[]
         if os.environ.get("OneDrive"): candidates.append(Path(os.environ["OneDrive"])/"Desktop")
@@ -484,12 +581,19 @@ class FuzzyPet(QWidget):
         act=menu.addMenu("🎭 动作")
         for label,fn in (("滚一圈",lambda:self.start_roll(8,2.6)),("高速滚走",lambda:self.start_roll(random.choice((-15,15)),3.4)),("原地翻滚",lambda:self.start_roll(.01,1.3)),("跳一下",lambda:setattr(self,"hop_started",time.monotonic()))):callbacks[act.addAction(label)]=fn
         expr=menu.addMenu("😊 表情")
-        for label,name in (("开心","happy"),("生气","angry"),("哭泣","cry"),("震惊","shock"),("害羞","shy"),("酷酷墨镜","cool"),("吃饼干","eat"),("睡觉","sleep"),("爱心","heart"),("天使","angel")): callbacks[expr.addAction(label)]=lambda n=name:self.set_expression(n)
+        for label,name in (("开心","happy"),("生气","angry"),("哭泣","cry"),("震惊","shock"),("害羞","shy"),("酷酷墨镜","cool"),("吃饼干","eat"),("睡觉","sleep"),("抱枕休息","rest"),("爱心","heart"),("天使","angel")): callbacks[expr.addAction(label)]=lambda n=name:self.set_expression(n)
+        dress=menu.addMenu("👗 装扮")
+        callbacks[dress.addAction("原味奶蛋（不换装）")]=lambda:self.set_costume_mode("none")
+        callbacks[dress.addAction("随机换装")]=lambda:self.set_costume_mode("random")
+        dress.addSeparator()
+        for key,label in COSTUMES.items():
+            if key!="none":callbacks[dress.addAction(label)]=lambda k=key:(self.set_costume_mode("fixed"),self.set_costume(k))
         info=menu.addMenu("🌦 信息播报"); callbacks[info.addAction(f"{self.data['city']} 天气")]=self.weather; callbacks[info.addAction("当前时间")]=lambda:self.say(datetime.now().strftime("现在是 %H:%M。")); callbacks[info.addAction("今天日期")]=self.overview; callbacks[info.addAction("今日概览")]=lambda:(self.overview(),QTimer.singleShot(2500,self.weather)); info.addSeparator(); callbacks[info.addAction("修改天气城市…")]=self.change_city
         tools=menu.addMenu("⏱ 小工具"); callbacks[tools.addAction("打开计时面板")]=self.show_timer_window
         callbacks[tools.addAction("快速提醒…")]=lambda:self.custom_timer(True);callbacks[tools.addAction("快速记事…")]=self.quick_note;callbacks[tools.addAction("查看笔记")]=self.show_notes;callbacks[tools.addAction("随机决定…")]=self.decide;callbacks[tools.addAction("掷骰子")]=lambda:self.say(f"掷到了 {random.randint(1,6)}！","shock");callbacks[tools.addAction("查看剪贴板")]=lambda:self.say(QApplication.clipboard().text()[:180] or "剪贴板是空的。","shock",8)
         links=menu.addMenu("🔗 快捷入口")
-        for name,url in self.data["links"].items():callbacks[links.addAction(name)]=lambda u=url:webbrowser.open(u)
+        for name,url in self.data["links"].items():
+            callbacks[links.addAction(name)]=(lambda n=name,u=url:self.launch_shortcut_or_url(n,u)) if name in ("GO","Moodle") else (lambda u=url:webbrowser.open(u))
         links.addSeparator();callbacks[links.addAction("微信")]=lambda:self.launch_app("weixin://","https://weixin.qq.com/");links.addSeparator();callbacks[links.addAction("添加自定义网站…")]=self.add_link
         capture=menu.addMenu("📷 截图与录屏");callbacks[capture.addAction("全屏截图")]=self.screenshot;callbacks[capture.addAction("打开录屏工具")]=self.screen_record
         menu.addSeparator();callbacks[menu.addAction("⚙ 奶蛋设置中心")]=self.show_settings
