@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, 
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QListWidget, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
 SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
-APP_VERSION="2.5.2"
+APP_VERSION="2.5.4"
 # A GitHub Releases API endpoint will be inserted after the user's publishing
 # repository is connected. pet_data.json can override it with update_api_url.
 UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
@@ -131,7 +131,7 @@ class SettingsWindow(QWidget):
         self.quiet=QCheckBox("固定在原地，但仍会做表情和说话");self.quiet.setChecked(bool(pet.data.get("quiet")));self.quiet.toggled.connect(pet.set_quiet);bform.addRow("安静奶蛋",self.quiet)
         self.locked=QCheckBox("禁止拖动奶蛋");self.locked.setChecked(bool(pet.data.get("position_locked")));self.locked.toggled.connect(lambda v:self.set_value("position_locked",v));bform.addRow("位置锁定",self.locked)
         self.clickthrough=QCheckBox("鼠标点击穿过奶蛋（从托盘关闭）");self.clickthrough.setChecked(bool(pet.data.get("click_through")));self.clickthrough.toggled.connect(pet.set_click_through);bform.addRow("点击穿透",self.clickthrough)
-        self.click_action=QComboBox();self.click_action.addItems(["不触发新动作","只随机表情","随机表情和动作","表情、动作和装扮全部随机"]);self.click_action.setCurrentIndex({"none":0,"expression":1,"expression_action":2,"all":3}.get(pet.data.get("click_action","all"),3));self.click_action.currentIndexChanged.connect(lambda i:self.set_value("click_action",("none","expression","expression_action","all")[i]));bform.addRow("单击奶蛋",self.click_action)
+        self.click_action=QComboBox();self.click_action.addItems(["不触发任何变化","只随机表情","只随机装扮（每点一次换一个）","随机表情和动作","表情、动作和装扮全部随机"]);self.click_action.setCurrentIndex({"none":0,"expression":1,"costume":2,"expression_action":3,"all":4}.get(pet.data.get("click_action","all"),4));self.click_action.currentIndexChanged.connect(lambda i:self.set_value("click_action",("none","expression","costume","expression_action","all")[i]));bform.addRow("单击奶蛋",self.click_action)
         self.chatter=QComboBox();self.chatter.addItems(["关闭","低","中","高"]);self.chatter.setCurrentIndex({"off":0,"low":1,"medium":2,"high":3}.get(pet.data.get("chatter"),1));self.chatter.currentIndexChanged.connect(self.chatter_changed);bform.addRow("主动说话频率",self.chatter)
         self.screen=QComboBox();self.screen.addItems(["只在当前显示器","允许跨显示器"]);self.screen.setCurrentIndex(0 if pet.data.get("screen_mode","current")=="current" else 1);self.screen.currentIndexChanged.connect(lambda i:self.set_value("screen_mode","current" if i==0 else "all"));bform.addRow("活动范围",self.screen)
         layout.addWidget(behaviour)
@@ -216,8 +216,7 @@ class FuzzyPet(QWidget):
         self.base_body_box=self.yellow_body_box(self.frames["idle"])
         for name in COSTUMES:
             if name=="none":continue
-            p=QPixmap(str(ASSETS/"costumes"/f"{name}.png"))
-            if p.isNull() and name=="angel":p=self.frames["angel"]
+            p=self.frames["angel"] if name=="angel" else QPixmap(str(ASSETS/"costumes"/f"{name}.png"))
             if not p.isNull():self.costume_frames[name]=p;self.costume_body_boxes[name]=self.yellow_body_box(p)
         self.tint_cache={};self.current_costume=str(self.data.get("costume","none"));self.next_costume_change=time.monotonic()+10
         self.walking=False; self.paused=bool(self.data.get("quiet")); self.move_dx=random.choice((-2,0,2)); self.move_dy=random.choice((-2,0,2)); self.dragging=False; self.drag_offset=QPoint(); self.press_global=QPoint(); self.press_time=0.0
@@ -700,7 +699,10 @@ class FuzzyPet(QWidget):
         if self.dragging:
             self.dragging=False;self.walking=False;self.rolling_until=0.;self.roll_speed=0.;self.next_decision=time.monotonic()+8;self.last_interaction=time.monotonic()
         elif time.monotonic()-self.press_time<1:
-            if self.action_active():self.stop_current_action()
+            if self.data.get("click_action")=="costume":
+                if self.action_active():self.stop_current_action()
+                self.random_click_interaction()
+            elif self.action_active():self.stop_current_action()
             else:self.random_click_interaction()
         e.accept()
     def action_active(self):
@@ -711,6 +713,10 @@ class FuzzyPet(QWidget):
         mode=self.data.get("click_action","all")
         if mode=="none":return
         lock_original=self.data.get("costume_mode")=="locked_original"
+        if mode=="costume":
+            if not lock_original:
+                self.data["costume_mode"]="fixed";self.random_costume()
+            return
         if mode=="expression" or lock_original:self.set_expression(random.choice(("heart","happy","shy","shock","cool","eat")));return
         choice=random.random()
         expression_chance=.58 if mode=="expression_action" else .38
