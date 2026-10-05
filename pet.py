@@ -9,14 +9,14 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, 
 from PySide6.QtWidgets import QApplication, QCheckBox, QColorDialog, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
 SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
-APP_VERSION="2.4.0"
+APP_VERSION="2.4.2"
 # A GitHub Releases API endpoint will be inserted after the user's publishing
 # repository is connected. pet_data.json can override it with update_api_url.
 UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
 if getattr(sys,"frozen",False):
     DATA_DIR=Path(os.environ.get("APPDATA",Path.home()))/"奶蛋"; DATA_DIR.mkdir(parents=True,exist_ok=True); DATA=DATA_DIR/"pet_data.json"
 else: DATA=SCRIPT_ROOT/"pet_data.json"
-DEFAULT={"city":"London","quiet":False,"speak":False,"voice":"","voice_rate":0,"voice_language":"zh","notes":[],"pet_scale":70,"width_scale":100,"height_scale":100,"opacity":100,"layer_mode":"top","position_locked":False,"click_through":False,"chatter":"low","screen_mode":"current","settings_v2_2":True,"saved_timers":[],"stopwatch_started":None,"auto_update":True,"update_api_url":"","skin_mode":"default","skin_color":"#f6c94f","costume_mode":"none","costume":"none","costume_interval":300,"links":{"ChatGPT":"https://chatgpt.com/","小红书":"https://www.xiaohongshu.com/","Portico":"https://evision.ucl.ac.uk/urd/sits.urd/run/siw_lgn","Gmail":"https://mail.google.com/mail/u/0/?tab=rm&ogbl#inbox","timetable":"https://timetable.ucl.ac.uk/my-timetable","GO":"https://ucl.ombiel.co.uk/campusm/home#menu","Moodle":"https://moodle.ucl.ac.uk/my/"}}
+DEFAULT={"city":"London","quiet":False,"speak":False,"voice":"","voice_rate":0,"voice_language":"zh","notes":[],"pet_scale":70,"width_scale":100,"height_scale":100,"opacity":100,"layer_mode":"top","position_locked":False,"click_through":False,"chatter":"low","screen_mode":"current","settings_v2_2":True,"saved_timers":[],"stopwatch_started":None,"auto_update":True,"update_api_url":"","skin_mode":"default","skin_color":"#f6c94f","costume_mode":"none","costume":"none","costume_interval":300,"deleted_links":[],"links":{"ChatGPT":"https://chatgpt.com/","小红书":"https://www.xiaohongshu.com/","Portico":"https://evision.ucl.ac.uk/urd/sits.urd/run/siw_lgn","Gmail":"https://mail.google.com/mail/u/0/?tab=rm&ogbl#inbox","timetable":"https://timetable.ucl.ac.uk/my-timetable","GO":"https://ucl.ombiel.co.uk/campusm/home#menu","Moodle":"https://moodle.ucl.ac.uk/my/"}}
 LEGACY_LINKS={"Imperial Blackboard","My Imperial","Imperial Outlook","YouTube","Spotify","Portical"}
 
 COSTUMES={
@@ -49,7 +49,9 @@ def load_data():
         if not saved.get("settings_v2_2"):
             if int(saved.get("pet_scale",100))==100:data["pet_scale"]=70
             data["settings_v2_2"]=True
-        data["links"].update({k:v for k,v in saved.get("links",{}).items() if k not in LEGACY_LINKS})
+        deleted={str(name) for name in saved.get("deleted_links",[]) if str(name)}
+        data["links"]={k:v for k,v in data["links"].items() if k not in deleted}
+        data["links"].update({k:v for k,v in saved.get("links",{}).items() if k not in LEGACY_LINKS and k not in deleted})
     except (OSError,ValueError,TypeError): pass
     return data
 
@@ -419,8 +421,36 @@ class FuzzyPet(QWidget):
         if not ok or not name.strip():return
         url,ok=QInputDialog.getText(self,"添加快捷入口","网址（https://…）：")
         if ok and url.strip():
-            if not url.startswith(("http://","https://")):url="https://"+url
-            self.data["links"][name.strip()]=url.strip(); self.save_data(); self.say("快捷入口加好啦！")
+            name=name.strip();url=self.normalized_link_url(url)
+            self.data["links"][name]=url
+            self.data["deleted_links"]=[x for x in self.data.get("deleted_links",[]) if x!=name]
+            self.save_data(); self.say("快捷入口加好啦！")
+    def normalized_link_url(self,url):
+        url=url.strip()
+        return url if url.startswith(("http://","https://")) else "https://"+url
+    def edit_link(self,old_name):
+        if old_name not in self.data["links"]:return
+        old_url=self.data["links"][old_name]
+        new_name,ok=QInputDialog.getText(self,"编辑快捷入口","显示名称：",text=old_name)
+        if not ok or not new_name.strip():return
+        new_url,ok=QInputDialog.getText(self,"编辑快捷入口","网址（https://…）：",text=old_url)
+        if not ok or not new_url.strip():return
+        new_name=new_name.strip();new_url=self.normalized_link_url(new_url)
+        if new_name!=old_name and new_name in self.data["links"]:
+            if QMessageBox.question(self,"替换快捷入口",f"“{new_name}”已经存在，要替换它吗？",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:return
+        items=list(self.data["links"].items());updated={}
+        for name,url in items:
+            if name==old_name:updated[new_name]=new_url
+            elif name!=new_name:updated[name]=url
+        self.data["links"]=updated
+        deleted=set(self.data.get("deleted_links",[]));deleted.add(old_name);deleted.discard(new_name)
+        self.data["deleted_links"]=sorted(deleted);self.save_data();self.say("快捷入口修改并保存啦！","happy",5)
+    def delete_link(self,name):
+        if name not in self.data["links"]:return
+        if QMessageBox.question(self,"删除快捷入口",f"确定删除“{name}”吗？",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:return
+        self.data["links"].pop(name,None)
+        deleted=set(self.data.get("deleted_links",[]));deleted.add(name);self.data["deleted_links"]=sorted(deleted)
+        self.save_data();self.say("快捷入口已经删除并保存。","happy",5)
     def launch_app(self,protocol,fallback):
         try: os.startfile(protocol)
         except OSError: webbrowser.open(fallback); self.say("没有找到桌面应用，已打开网页版。","shock",5)
@@ -642,7 +672,15 @@ class FuzzyPet(QWidget):
         links=menu.addMenu("🔗 快捷入口")
         for name,url in self.data["links"].items():
             callbacks[links.addAction(name)]=(lambda n=name,u=url:self.launch_shortcut_or_url(n,u)) if name in ("GO","Moodle") else (lambda u=url:webbrowser.open(u))
-        links.addSeparator();callbacks[links.addAction("微信")]=lambda:self.launch_app("weixin://","https://weixin.qq.com/");links.addSeparator();callbacks[links.addAction("添加自定义网站…")]=self.add_link
+        links.addSeparator();callbacks[links.addAction("微信")]=lambda:self.launch_app("weixin://","https://weixin.qq.com/");links.addSeparator();callbacks[links.addAction("➕ 添加快捷入口…")]=self.add_link
+        manage=links.addMenu("✏️ 编辑或删除快捷入口")
+        if self.data["links"]:
+            for name in self.data["links"]:
+                item=manage.addMenu(name)
+                callbacks[item.addAction("编辑名称和网址…")]=lambda n=name:self.edit_link(n)
+                callbacks[item.addAction("删除")]=lambda n=name:self.delete_link(n)
+        else:
+            empty=manage.addAction("暂无快捷入口");empty.setEnabled(False)
         capture=menu.addMenu("📷 截图与录屏");callbacks[capture.addAction("全屏截图")]=self.screenshot;callbacks[capture.addAction("打开录屏工具")]=self.screen_record
         menu.addSeparator();callbacks[menu.addAction("⚙ 奶蛋设置中心")]=self.show_settings
         quiet_action=menu.addAction("🤫 安静奶蛋");quiet_action.setCheckable(True);quiet_action.setChecked(bool(self.data.get("quiet")));callbacks[quiet_action]=lambda:self.set_quiet(not self.data.get("quiet"))
