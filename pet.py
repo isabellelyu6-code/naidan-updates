@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, 
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QListWidget, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
 SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
-APP_VERSION="2.5.1"
+APP_VERSION="2.5.2"
 # A GitHub Releases API endpoint will be inserted after the user's publishing
 # repository is connected. pet_data.json can override it with update_api_url.
 UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
