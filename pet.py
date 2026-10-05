@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, 
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QListWidget, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
 SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
-APP_VERSION="2.5.0"
+APP_VERSION="2.5.1"
 # A GitHub Releases API endpoint will be inserted after the user's publishing
 # repository is connected. pet_data.json can override it with update_api_url.
 UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
@@ -207,7 +207,9 @@ class FuzzyPet(QWidget):
         self.frames={}
         for name in ("idle","step","heart","angel","roll","rest"):
             p=QPixmap(str(ASSETS/f"{name}.png"))
-            if p.isNull(): raise FileNotFoundError(ASSETS/f"{name}.png")
+            if p.isNull():
+                if name=="idle":raise FileNotFoundError(ASSETS/f"{name}.png")
+                p=self.frames["idle"]
             self.frames[name]=p
         self.costume_frames={}
         self.costume_body_boxes={}
