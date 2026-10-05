@@ -20,9 +20,14 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force assets | Out-Null
-          foreach ($name in @("idle.png","step.png","heart.png","angel.png","roll.png","奶蛋.ico")) {
+          foreach ($name in @("idle.png","step.png","heart.png","angel.png","roll.png","rest.png","奶蛋.ico")) {
             if (Test-Path $name) { Copy-Item $name assets }
           }
+          if (Test-Path "costumes") {
+            Copy-Item "costumes" "assets/costumes" -Recurse -Force
+          }
+          if (-not (Test-Path "assets/rest.png")) { throw "Missing required asset: rest.png" }
+          if (-not (Test-Path "assets/costumes")) { throw "Missing required asset folder: costumes" }
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pyinstaller pillow
       - name: Build folder version
@@ -33,6 +38,13 @@ jobs:
           --icon "assets\奶蛋.ico"
           --add-data "assets;assets"
           pet.py
+      - name: Verify packaged assets
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/奶蛋/_internal/assets/rest.png")) { throw "Packaged app is missing rest.png" }
+          if (-not (Test-Path "dist/奶蛋/_internal/assets/costumes")) { throw "Packaged app is missing costumes" }
+          $costumeCount = (Get-ChildItem "dist/奶蛋/_internal/assets/costumes" -Filter "*.png").Count
+          if ($costumeCount -lt 26) { throw "Packaged app has only $costumeCount costume images; expected at least 26" }
       - name: Create ZIP
         shell: pwsh
         run: Compress-Archive -Path "dist/奶蛋" -DestinationPath "naidan-windows.zip" -Force
