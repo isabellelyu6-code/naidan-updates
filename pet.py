@@ -6,17 +6,17 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QObject, QPoint, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, QPen, QPixmap, QTransform
-from PySide6.QtWidgets import QApplication, QCheckBox, QColorDialog, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QListWidget, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget
 
 SCRIPT_ROOT=Path(__file__).resolve().parent; ROOT=Path(getattr(sys,"_MEIPASS",SCRIPT_ROOT)); ASSETS=ROOT/"assets"
-APP_VERSION="2.4.2"
+APP_VERSION="2.5.0"
 # A GitHub Releases API endpoint will be inserted after the user's publishing
 # repository is connected. pet_data.json can override it with update_api_url.
 UPDATE_API_URL="https://api.github.com/repos/isabellelyu6-code/naidan-updates/releases/latest"
 if getattr(sys,"frozen",False):
     DATA_DIR=Path(os.environ.get("APPDATA",Path.home()))/"奶蛋"; DATA_DIR.mkdir(parents=True,exist_ok=True); DATA=DATA_DIR/"pet_data.json"
 else: DATA=SCRIPT_ROOT/"pet_data.json"
-DEFAULT={"city":"London","quiet":False,"speak":False,"voice":"","voice_rate":0,"voice_language":"zh","notes":[],"pet_scale":70,"width_scale":100,"height_scale":100,"opacity":100,"layer_mode":"top","position_locked":False,"click_through":False,"chatter":"low","screen_mode":"current","settings_v2_2":True,"saved_timers":[],"stopwatch_started":None,"auto_update":True,"update_api_url":"","skin_mode":"default","skin_color":"#f6c94f","costume_mode":"none","costume":"none","costume_interval":300,"deleted_links":[],"links":{"ChatGPT":"https://chatgpt.com/","小红书":"https://www.xiaohongshu.com/","Portico":"https://evision.ucl.ac.uk/urd/sits.urd/run/siw_lgn","Gmail":"https://mail.google.com/mail/u/0/?tab=rm&ogbl#inbox","timetable":"https://timetable.ucl.ac.uk/my-timetable","GO":"https://ucl.ombiel.co.uk/campusm/home#menu","Moodle":"https://moodle.ucl.ac.uk/my/"}}
+DEFAULT={"city":"London","quiet":False,"speak":False,"voice":"","voice_rate":0,"voice_language":"zh","notes":[],"pet_scale":70,"width_scale":100,"height_scale":100,"opacity":100,"layer_mode":"top","position_locked":False,"click_through":False,"click_action":"all","chatter":"low","screen_mode":"current","settings_v2_2":True,"saved_timers":[],"stopwatch_started":None,"auto_update":True,"update_api_url":"","skin_mode":"default","skin_color":"#f6c94f","costume_mode":"none","costume":"none","costume_interval":300,"deleted_links":[],"link_modes":{"GO":"desktop","Moodle":"desktop"},"links":{"ChatGPT":"https://chatgpt.com/","小红书":"https://www.xiaohongshu.com/","Portico":"https://evision.ucl.ac.uk/urd/sits.urd/run/siw_lgn","Gmail":"https://mail.google.com/mail/u/0/?tab=rm&ogbl#inbox","timetable":"https://timetable.ucl.ac.uk/my-timetable","GO":"https://ucl.ombiel.co.uk/campusm/home#menu","Moodle":"https://moodle.ucl.ac.uk/my/"}}
 LEGACY_LINKS={"Imperial Blackboard","My Imperial","Imperial Outlook","YouTube","Spotify","Portical"}
 
 COSTUMES={
@@ -63,6 +63,44 @@ class NotesWindow(QWidget):
     def save(self):
         self.pet.data["notes"]=[x.strip() for x in self.editor.toPlainText().split("\n\n") if x.strip()]; self.pet.save_data(); self.pet.say("记好啦！"); self.close()
 
+class ShortcutsWindow(QWidget):
+    def __init__(self,pet):
+        super().__init__();self.pet=pet;self.setWindowTitle("管理快捷入口");self.resize(430,390)
+        layout=QVBoxLayout(self);hint=QLabel("选中入口后可以编辑或删除；拖动条目可以调整右键菜单中的顺序。")
+        hint.setWordWrap(True);layout.addWidget(hint)
+        self.items=QListWidget();self.items.setDragDropMode(QAbstractItemView.InternalMove);self.items.setDefaultDropAction(Qt.MoveAction)
+        self.items.model().rowsMoved.connect(self.save_order);self.items.itemDoubleClicked.connect(lambda item:self.edit_selected());layout.addWidget(self.items,1)
+        row=QHBoxLayout();add=QPushButton("添加");edit_button=QPushButton("编辑");delete=QPushButton("删除");close=QPushButton("完成")
+        add.clicked.connect(self.add);edit_button.clicked.connect(self.edit_selected);delete.clicked.connect(self.delete_selected);close.clicked.connect(self.close)
+        row.addWidget(add);row.addWidget(edit_button);row.addWidget(delete);row.addStretch();row.addWidget(close);layout.addLayout(row);self.refresh()
+    def refresh(self,select_name=None):
+        self.items.blockSignals(True);self.items.clear()
+        for name,url in self.pet.data["links"].items():
+            mode="优先打开桌面快捷方式" if self.pet.data.get("link_modes",{}).get(name)=="desktop" else "打开网页"
+            self.items.addItem(f"{name}\n{url}\n{mode}")
+        self.items.blockSignals(False)
+        if select_name:
+            for index in range(self.items.count()):
+                if self.item_name(index)==select_name:self.items.setCurrentRow(index);break
+    def item_name(self,index):return self.items.item(index).text().split("\n",1)[0] if self.items.item(index) else ""
+    def selected_name(self):return self.item_name(self.items.currentRow()) if self.items.currentRow()>=0 else ""
+    def add(self):
+        before=set(self.pet.data["links"]);self.pet.add_link();created=next((x for x in self.pet.data["links"] if x not in before),None);self.refresh(created)
+    def edit_selected(self):
+        name=self.selected_name()
+        if not name:QMessageBox.information(self,"管理快捷入口","请先选择一个入口。");return
+        self.pet.edit_link(name);self.refresh()
+    def delete_selected(self):
+        name=self.selected_name()
+        if not name:QMessageBox.information(self,"管理快捷入口","请先选择一个入口。");return
+        self.pet.delete_link(name);self.refresh()
+    def save_order(self,*args):
+        ordered={}
+        for index in range(self.items.count()):
+            name=self.item_name(index)
+            if name in self.pet.data["links"]:ordered[name]=self.pet.data["links"][name]
+        if len(ordered)==len(self.pet.data["links"]):self.pet.data["links"]=ordered;self.pet.save_data()
+
 class SizeWindow(QWidget):
     def __init__(self,pet):
         super().__init__(); self.pet=pet; self.setWindowTitle("奶蛋外观尺寸"); self.setFixedWidth(360); layout=QVBoxLayout(self)
@@ -93,6 +131,7 @@ class SettingsWindow(QWidget):
         self.quiet=QCheckBox("固定在原地，但仍会做表情和说话");self.quiet.setChecked(bool(pet.data.get("quiet")));self.quiet.toggled.connect(pet.set_quiet);bform.addRow("安静奶蛋",self.quiet)
         self.locked=QCheckBox("禁止拖动奶蛋");self.locked.setChecked(bool(pet.data.get("position_locked")));self.locked.toggled.connect(lambda v:self.set_value("position_locked",v));bform.addRow("位置锁定",self.locked)
         self.clickthrough=QCheckBox("鼠标点击穿过奶蛋（从托盘关闭）");self.clickthrough.setChecked(bool(pet.data.get("click_through")));self.clickthrough.toggled.connect(pet.set_click_through);bform.addRow("点击穿透",self.clickthrough)
+        self.click_action=QComboBox();self.click_action.addItems(["不触发新动作","只随机表情","随机表情和动作","表情、动作和装扮全部随机"]);self.click_action.setCurrentIndex({"none":0,"expression":1,"expression_action":2,"all":3}.get(pet.data.get("click_action","all"),3));self.click_action.currentIndexChanged.connect(lambda i:self.set_value("click_action",("none","expression","expression_action","all")[i]));bform.addRow("单击奶蛋",self.click_action)
         self.chatter=QComboBox();self.chatter.addItems(["关闭","低","中","高"]);self.chatter.setCurrentIndex({"off":0,"low":1,"medium":2,"high":3}.get(pet.data.get("chatter"),1));self.chatter.currentIndexChanged.connect(self.chatter_changed);bform.addRow("主动说话频率",self.chatter)
         self.screen=QComboBox();self.screen.addItems(["只在当前显示器","允许跨显示器"]);self.screen.setCurrentIndex(0 if pet.data.get("screen_mode","current")=="current" else 1);self.screen.currentIndexChanged.connect(lambda i:self.set_value("screen_mode","current" if i==0 else "all"));bform.addRow("活动范围",self.screen)
         layout.addWidget(behaviour)
@@ -422,7 +461,10 @@ class FuzzyPet(QWidget):
         url,ok=QInputDialog.getText(self,"添加快捷入口","网址（https://…）：")
         if ok and url.strip():
             name=name.strip();url=self.normalized_link_url(url)
+            opening,ok=QInputDialog.getItem(self,"打开方式","选择打开方式：",["打开网页","优先打开桌面快捷方式，找不到时打开网页"],0,False)
+            if not ok:return
             self.data["links"][name]=url
+            self.data.setdefault("link_modes",{})[name]="desktop" if opening.startswith("优先") else "web"
             self.data["deleted_links"]=[x for x in self.data.get("deleted_links",[]) if x!=name]
             self.save_data(); self.say("快捷入口加好啦！")
     def normalized_link_url(self,url):
@@ -435,6 +477,10 @@ class FuzzyPet(QWidget):
         if not ok or not new_name.strip():return
         new_url,ok=QInputDialog.getText(self,"编辑快捷入口","网址（https://…）：",text=old_url)
         if not ok or not new_url.strip():return
+        old_mode=self.data.get("link_modes",{}).get(old_name,"desktop" if old_name in ("GO","Moodle") else "web")
+        choices=["打开网页","优先打开桌面快捷方式，找不到时打开网页"]
+        opening,ok=QInputDialog.getItem(self,"编辑快捷入口","选择打开方式：",choices,1 if old_mode=="desktop" else 0,False)
+        if not ok:return
         new_name=new_name.strip();new_url=self.normalized_link_url(new_url)
         if new_name!=old_name and new_name in self.data["links"]:
             if QMessageBox.question(self,"替换快捷入口",f"“{new_name}”已经存在，要替换它吗？",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:return
@@ -443,12 +489,14 @@ class FuzzyPet(QWidget):
             if name==old_name:updated[new_name]=new_url
             elif name!=new_name:updated[name]=url
         self.data["links"]=updated
+        modes=self.data.setdefault("link_modes",{});modes.pop(old_name,None);modes[new_name]="desktop" if opening.startswith("优先") else "web"
         deleted=set(self.data.get("deleted_links",[]));deleted.add(old_name);deleted.discard(new_name)
         self.data["deleted_links"]=sorted(deleted);self.save_data();self.say("快捷入口修改并保存啦！","happy",5)
     def delete_link(self,name):
         if name not in self.data["links"]:return
         if QMessageBox.question(self,"删除快捷入口",f"确定删除“{name}”吗？",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:return
         self.data["links"].pop(name,None)
+        self.data.setdefault("link_modes",{}).pop(name,None)
         deleted=set(self.data.get("deleted_links",[]));deleted.add(name);self.data["deleted_links"]=sorted(deleted)
         self.save_data();self.say("快捷入口已经删除并保存。","happy",5)
     def launch_app(self,protocol,fallback):
@@ -471,6 +519,9 @@ class FuzzyPet(QWidget):
                 try:os.startfile(str(sorted(candidates,key=lambda p:len(p.name))[0]));self.say(f"正在打开桌面上的 {name}。","happy",4);return
                 except OSError:pass
         webbrowser.open(url);self.say(f"没有找到桌面版 {name}，已打开网页版。","shock",5)
+    def open_saved_link(self,name,url):
+        if self.data.get("link_modes",{}).get(name,"desktop" if name in ("GO","Moodle") else "web")=="desktop":self.launch_shortcut_or_url(name,url)
+        else:webbrowser.open(url)
     def screenshots_folder(self):
         candidates=[]
         if os.environ.get("OneDrive"): candidates.append(Path(os.environ["OneDrive"])/"Desktop")
@@ -556,11 +607,21 @@ class FuzzyPet(QWidget):
             self.say("更新下载失败，旧版没有受到影响。","cry",7);return
         if not getattr(sys,"frozen",False) or os.name!="nt":
             self.say("新版已下载；自动替换只在奶蛋文件夹版中启用。","shock",8);return
-        current=Path(sys.executable);downloaded=Path(result["path"]);script=Path(tempfile.gettempdir())/"naidan_apply_update.ps1";stage=Path(tempfile.gettempdir())/"naidan_update_unpack"
-        body=f'''$ErrorActionPreference = "Stop"\nStart-Sleep -Seconds 3\n$zip = "{downloaded}"\n$install = "{current.parent}"\n$stage = "{stage}"\nif (Test-Path $stage) {{ Remove-Item $stage -Recurse -Force }}\nExpand-Archive -LiteralPath $zip -DestinationPath $stage -Force\n$source = Join-Path $stage "奶蛋"\nif (-not (Test-Path (Join-Path $source "奶蛋.exe"))) {{ exit 1 }}\nCopy-Item (Join-Path $source "*") $install -Recurse -Force\nStart-Process (Join-Path $install "奶蛋.exe")\n'''
+        current=Path(sys.executable);downloaded=Path(result["path"]);script=Path(tempfile.gettempdir())/"naidan_apply_update.ps1";stage=Path(tempfile.gettempdir())/"naidan_update_unpack";backup=Path(str(current.parent)+".update-backup")
+        body=f'''$ErrorActionPreference = "Stop"\nStart-Sleep -Seconds 3\n$zip = "{downloaded}"\n$install = "{current.parent}"\n$backup = "{backup}"\n$stage = "{stage}"\ntry {{\n  if (Test-Path $stage) {{ Remove-Item $stage -Recurse -Force }}\n  Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force\n  $source = Join-Path $stage "奶蛋"\n  if (-not (Test-Path (Join-Path $source "奶蛋.exe"))) {{ throw "新版缺少奶蛋.exe" }}\n  if (Test-Path $backup) {{ Remove-Item $backup -Recurse -Force }}\n  Copy-Item -LiteralPath $install -Destination $backup -Recurse -Force\n  Copy-Item (Join-Path $source "*") $install -Recurse -Force\n  $process = Start-Process (Join-Path $install "奶蛋.exe") -PassThru\n  Start-Sleep -Seconds 8\n  if ($process.HasExited) {{ throw "新版未能正常启动" }}\n}} catch {{\n  if (Test-Path $backup) {{\n    Copy-Item (Join-Path $backup "*") $install -Recurse -Force\n    Start-Process (Join-Path $install "奶蛋.exe")\n  }}\n}}\n'''
         script.write_text(body,encoding="utf-8-sig")
         try:subprocess.Popen(["powershell","-NoProfile","-ExecutionPolicy","Bypass","-File",str(script)],creationflags=0x08000000);QApplication.quit()
         except OSError:self.say("无法自动替换；旧版仍可正常使用。","cry",7)
+    def restore_previous_version(self):
+        if not getattr(sys,"frozen",False) or os.name!="nt":self.say("只有安装后的文件夹版可以恢复旧版本。","shock",6);return
+        install=Path(sys.executable).parent;backup=Path(str(install)+".update-backup")
+        if not backup.exists():self.say("没有找到可以恢复的旧版本。","shock",6);return
+        if QMessageBox.question(self,"恢复更新前版本","确定恢复到上次更新前的版本吗？",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:return
+        script=Path(tempfile.gettempdir())/"naidan_restore_previous.ps1"
+        body=f'''$ErrorActionPreference = "Stop"\nStart-Sleep -Seconds 3\n$install = "{install}"\n$backup = "{backup}"\nCopy-Item (Join-Path $backup "*") $install -Recurse -Force\nStart-Process (Join-Path $install "奶蛋.exe")\n'''
+        script.write_text(body,encoding="utf-8-sig")
+        try:subprocess.Popen(["powershell","-NoProfile","-ExecutionPolicy","Bypass","-File",str(script)],creationflags=0x08000000);QApplication.quit()
+        except OSError:self.say("恢复失败，当前版本没有受到影响。","cry",7)
     def toggle_auto_update(self):
         self.data["auto_update"]=not self.data.get("auto_update",True);self.save_data();self.say("已开启自动检查更新。" if self.data["auto_update"] else "已关闭自动检查更新。","happy",5)
     def toggle_tiny(self):
@@ -578,6 +639,8 @@ class FuzzyPet(QWidget):
         self.settings_window=SettingsWindow(self);self.settings_window.show();self.settings_window.raise_();self.settings_window.activateWindow()
     def show_timer_window(self):
         self.timer_window=TimerWindow(self); self.timer_window.show(); self.timer_window.raise_()
+    def show_shortcuts_window(self):
+        self.shortcuts_window=ShortcutsWindow(self);self.shortcuts_window.show();self.shortcuts_window.raise_();self.shortcuts_window.activateWindow()
     def restore_pet(self):
         if self.tiny_mode:self.toggle_tiny()
         self.show(); self.raise_(); self.activateWindow()
@@ -643,10 +706,14 @@ class FuzzyPet(QWidget):
     def stop_current_action(self):
         self.walking=False;self.rolling_until=0.;self.roll_speed=0.;self.roll_spin_speed=0.;self.roll_angle=0.;self.hop_started=0.;self.expression="normal";self.expression_until=0.;self.bubble="";self.bubble_until=0.;self.update()
     def random_click_interaction(self):
-        choice=random.random()
+        mode=self.data.get("click_action","all")
+        if mode=="none":return
         lock_original=self.data.get("costume_mode")=="locked_original"
-        if choice<.38 or lock_original:self.set_expression(random.choice(("heart","happy","shy","shock","cool","eat")))
-        elif choice<.76:
+        if mode=="expression" or lock_original:self.set_expression(random.choice(("heart","happy","shy","shock","cool","eat")));return
+        choice=random.random()
+        expression_chance=.58 if mode=="expression_action" else .38
+        if choice<expression_chance:self.set_expression(random.choice(("heart","happy","shy","shock","cool","eat")))
+        elif mode=="all" and choice<.76:
             self.data["costume_mode"]="fixed";self.random_costume()
         elif choice<.9:
             self.hop_started=time.monotonic();self.say(random.choice(("跳一下！","奶蛋弹起来啦！")),"happy",3)
@@ -671,22 +738,14 @@ class FuzzyPet(QWidget):
         callbacks[tools.addAction("快速提醒…")]=lambda:self.custom_timer(True);callbacks[tools.addAction("快速记事…")]=self.quick_note;callbacks[tools.addAction("查看笔记")]=self.show_notes;callbacks[tools.addAction("随机决定…")]=self.decide;callbacks[tools.addAction("掷骰子")]=lambda:self.say(f"掷到了 {random.randint(1,6)}！","shock");callbacks[tools.addAction("查看剪贴板")]=lambda:self.say(QApplication.clipboard().text()[:180] or "剪贴板是空的。","shock",8)
         links=menu.addMenu("🔗 快捷入口")
         for name,url in self.data["links"].items():
-            callbacks[links.addAction(name)]=(lambda n=name,u=url:self.launch_shortcut_or_url(n,u)) if name in ("GO","Moodle") else (lambda u=url:webbrowser.open(u))
-        links.addSeparator();callbacks[links.addAction("微信")]=lambda:self.launch_app("weixin://","https://weixin.qq.com/");links.addSeparator();callbacks[links.addAction("➕ 添加快捷入口…")]=self.add_link
-        manage=links.addMenu("✏️ 编辑或删除快捷入口")
-        if self.data["links"]:
-            for name in self.data["links"]:
-                item=manage.addMenu(name)
-                callbacks[item.addAction("编辑名称和网址…")]=lambda n=name:self.edit_link(n)
-                callbacks[item.addAction("删除")]=lambda n=name:self.delete_link(n)
-        else:
-            empty=manage.addAction("暂无快捷入口");empty.setEnabled(False)
+            callbacks[links.addAction(name)]=lambda n=name,u=url:self.open_saved_link(n,u)
+        links.addSeparator();callbacks[links.addAction("微信")]=lambda:self.launch_app("weixin://","https://weixin.qq.com/");links.addSeparator();callbacks[links.addAction("⚙ 管理快捷入口…")]=self.show_shortcuts_window
         capture=menu.addMenu("📷 截图与录屏");callbacks[capture.addAction("全屏截图")]=self.screenshot;callbacks[capture.addAction("打开录屏工具")]=self.screen_record
         menu.addSeparator();callbacks[menu.addAction("⚙ 奶蛋设置中心")]=self.show_settings
         quiet_action=menu.addAction("🤫 安静奶蛋");quiet_action.setCheckable(True);quiet_action.setChecked(bool(self.data.get("quiet")));callbacks[quiet_action]=lambda:self.set_quiet(not self.data.get("quiet"))
         callbacks[menu.addAction("🥚 恢复正常大小" if self.tiny_mode else "🥚 隐藏成迷你蛋")]=self.toggle_tiny
         autostart=menu.addAction("🚀 开机自动启动");autostart.setCheckable(True);autostart.setChecked(self.autostart_enabled());callbacks[autostart]=self.toggle_autostart
-        updates=menu.addMenu("🔄 软件更新");callbacks[updates.addAction("立即检查更新")]=lambda:self.check_for_updates(True);callbacks[updates.addAction("关闭自动检查" if self.data.get("auto_update",True) else "开启自动检查")]=self.toggle_auto_update
+        updates=menu.addMenu("🔄 软件更新");callbacks[updates.addAction("立即检查更新")]=lambda:self.check_for_updates(True);callbacks[updates.addAction("关闭自动检查" if self.data.get("auto_update",True) else "开启自动检查")]=self.toggle_auto_update;updates.addSeparator();callbacks[updates.addAction("恢复到更新前版本…")]=self.restore_previous_version
         callbacks[menu.addAction("🔊 关闭语音播报" if self.data["speak"] else "🔈 开启语音播报")]=self.toggle_speech;callbacks[menu.addAction("退出奶蛋")]=QApplication.quit
         selected=menu.exec(e.globalPos())
         if selected in callbacks:callbacks[selected]()
